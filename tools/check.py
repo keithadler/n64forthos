@@ -190,7 +190,7 @@ def run_desktop(rom="build/n64forthos.z64"):
     check("Devices" in text, "the desktop lists the devices window")
 
     # A pointer: put it over the first row and click.
-    m.mouse_move(0, 240 - 160)                  # from the middle of the screen
+    m.mouse_move(0, 240 - 128)                  # onto the first row of the list
     m.run(m.icount + 4 * FRAME)
     m.mouse_button(0x8000, True)
     m.run(m.icount + 4 * FRAME)

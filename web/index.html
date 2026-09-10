@@ -1,36 +1,84 @@
 <!doctype html>
 <meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>n64forthos</title>
 <style>
-  :root { color-scheme: dark; }
-  body { margin: 0; background: #070a16; color: #cdd5e4;
-         font: 13px/1.6 ui-monospace, Menlo, monospace; }
-  header { padding: 12px 16px 4px; }
-  h1 { margin: 0; font-size: 15px; color: #60e0ff; font-weight: 600; }
-  p { margin: 4px 0 0; color: #6e7d9b; max-width: 78ch; }
-  #wrap { display: flex; justify-content: center; padding: 10px; }
-  canvas { width: min(100%, 960px); aspect-ratio: 4 / 3; background: #000;
-           image-rendering: pixelated; border: 1px solid #223; cursor: none; }
-  #bar { padding: 0 16px 14px; color: #6e7d9b; display: flex; gap: 18px; }
+  :root { color-scheme: dark; --ink: #cdd5e4; --dim: #6e7d9b; --cyan: #60e0ff; }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: #070a16; color: var(--ink);
+         font: 13px/1.5 ui-monospace, Menlo, monospace;
+         display: flex; flex-direction: column; min-height: 100dvh; }
+  header { padding: 8px 14px 6px; display: flex; gap: 14px; align-items: baseline;
+           flex-wrap: wrap; }
+  h1 { margin: 0; font-size: 14px; color: var(--cyan); font-weight: 600; }
+  header p { margin: 0; color: var(--dim); font-size: 12px; }
   b { color: #ffbe5a; font-weight: 600; }
+
+  main { flex: 1; min-height: 0; display: flex; gap: 16px; padding: 0 14px 10px;
+         align-items: center; justify-content: center; flex-wrap: wrap; }
+  /* Width-driven with a height cap: a height-driven canvas collapses to
+     nothing when the viewport height is unknown. */
+  /* Width-driven with a height cap in viewport units: a percentage cap has
+     nothing definite to resolve against here, and the picture ran off the
+     bottom of the window. */
+  canvas { width: min(100%, 880px); aspect-ratio: 4 / 3; height: auto;
+           max-height: calc(100dvh - 210px); background: #000;
+           image-rendering: pixelated; border: 1px solid #223; cursor: none; }
+
+  /* the controller, for anyone without a keyboard to hand */
+  #pad { display: flex; flex-direction: column; gap: 10px; align-items: center;
+         user-select: none; -webkit-user-select: none; touch-action: none; }
+  .dpad { display: grid; grid-template: repeat(3, 34px) / repeat(3, 34px); gap: 2px; }
+  .row { display: flex; gap: 8px; }
+  button { background: #1a2140; color: var(--ink); border: 1px solid #3b4970;
+           border-radius: 6px; font: inherit; font-size: 12px; padding: 0;
+           width: 34px; height: 34px; cursor: pointer; touch-action: none; }
+  button:active, button.on { background: var(--cyan); color: #0a0e1e; border-color: var(--cyan); }
+  button.wide { width: 58px; }
+  .a { border-color: #4a7fd4; } .b { border-color: #48b070; }
+  .start { border-color: #d45a5a; }
+  #pad small { color: var(--dim); font-size: 11px; }
+
+  footer { padding: 4px 14px 10px; color: var(--dim); display: flex; gap: 16px;
+           font-size: 12px; }
   a { color: #ffbe5a; }
 </style>
 <header>
   <h1>n64forthos</h1>
-  <p>A Forth operating system for the Nintendo 64, running here in an
-     emulator written for this repository &mdash; which is why the page can
-     hand it a <b>real mouse and keyboard</b>: they arrive as an N64 Mouse and
-     a Randnet Keyboard on joybus channels 2 and 3, the same way a BlueRetro
-     adapter presents them to the real console.</p>
-  <p><b>Click the picture</b> to give it the mouse (Esc takes it back).
-     Type at the Forth prompt with your own keyboard. Arrow keys, Z, X and
-     Enter are the controller if you would rather use one.</p>
+  <p>A Forth operating system for the Nintendo 64, in an emulator written for
+     this repository &mdash; so the page can hand it a <b>real mouse and
+     keyboard</b>, as an N64 Mouse and a Randnet Keyboard on joybus channels 2
+     and 3, exactly as a BlueRetro adapter presents them to the console.
+     <b>Click the picture</b> for the mouse (Esc takes it back); type at the
+     prompt; or use the pad.</p>
 </header>
-<div id="wrap"><canvas id="screen" width="640" height="480"></canvas></div>
-<div id="bar">
-  <span id="status">loading the cartridge…</span>
+<main>
+  <canvas id="screen" width="640" height="480"></canvas>
+  <div id="pad">
+    <div class="dpad">
+      <span></span><button data-btn="UP">&#9650;</button><span></span>
+      <button data-btn="LEFT">&#9664;</button><span></span><button data-btn="RIGHT">&#9654;</button>
+      <span></span><button data-btn="DOWN">&#9660;</button><span></span>
+    </div>
+    <div class="row">
+      <button class="b" data-btn="B">B</button>
+      <button class="a" data-btn="A">A</button>
+    </div>
+    <div class="row">
+      <button data-btn="Z">Z</button>
+      <button class="start wide" data-btn="START">START</button>
+    </div>
+    <div class="row">
+      <button data-btn="L">L</button>
+      <button data-btn="R">R</button>
+    </div>
+    <small>A opens &middot; B closes</small>
+  </div>
+</main>
+<footer>
+  <span id="status">loading the cartridge&hellip;</span>
   <span id="speed"></span>
-</div>
+</footer>
 <script type="module">
 import { N64 } from './n64emu.js';
 
@@ -49,25 +97,26 @@ const padKeys = {
   ShiftLeft: PAD.Z, Tab: PAD.L,
 };
 
-const rom = new Uint8Array(await (await fetch('rom.z64')).arrayBuffer());
+const rom = new Uint8Array(await (await fetch('rom.z64?v=' + Date.now())).arrayBuffer());
 const emu = new N64(rom);
-window.emu = emu;              // handy from the console, and for tests
+window.emu = emu;
 emu.boot();
-status.textContent = `${(rom.length / 1048576).toFixed(0)} MiB cartridge, booted`;
+status.textContent = `${(rom.length / 1024) | 0} KiB of a 64 MiB cartridge, booted`;
 
-/* --- the keyboard ------------------------------------------------------
+/* --- input ---------------------------------------------------------------
  *
- * A keypress in a browser can begin and end inside a single emulated frame,
- * and the operating system only reads its devices once a frame, so presses
- * are queued and each one is held down for a few frames with a gap after it.
- * That is also what makes type-ahead work: type faster than it reads and
- * nothing is lost.
+ * `down` is what the user is holding, from any source.  `latch` keeps a very
+ * short press -- a tap on the pad, a synthetic keystroke -- down for a few
+ * frames, because the operating system reads its controller once a frame and
+ * would otherwise never see it.
  */
-const typed = [];                 // characters waiting to be delivered
-window.typed = typed;
-window.keyEvents = 0;
-const held = new Map();           // controller button -> frames still down
+const down = new Set();
+const latch = new Map();
+const typed = [];
 let key = 0, keyFrames = 0;
+
+function press(mask) { down.add(mask); latch.set(mask, 4); }
+function release(mask) { down.delete(mask); }
 
 function asciiOf(e) {
   if (e.key === 'Enter') return 13;
@@ -76,27 +125,38 @@ function asciiOf(e) {
   return 0;
 }
 addEventListener('keydown', (e) => {
-  window.keyEvents++;
-  if (padKeys[e.code] !== undefined) held.set(padKeys[e.code], 4);
+  if (padKeys[e.code] !== undefined) press(padKeys[e.code]);
   const code = asciiOf(e);
   if (code) typed.push(code);
   if (e.code === 'Tab' || e.code === 'Space' || e.code.startsWith('Arrow')) e.preventDefault();
 });
 addEventListener('keyup', (e) => {
-  if (padKeys[e.code] !== undefined && !held.get(padKeys[e.code])) {
-    emu.pad.buttons &= ~padKeys[e.code];
-  }
+  if (padKeys[e.code] !== undefined) release(padKeys[e.code]);
 });
 
+for (const button of document.querySelectorAll('button[data-btn]')) {
+  const mask = PAD[button.dataset.btn];
+  const hold = (e) => { e.preventDefault(); button.classList.add('on'); press(mask); };
+  const let_go = () => { button.classList.remove('on'); release(mask); };
+  button.addEventListener('pointerdown', hold);
+  button.addEventListener('pointerup', let_go);
+  button.addEventListener('pointerleave', let_go);
+  button.addEventListener('pointercancel', let_go);
+}
+
+window.feed = feedInput;          // handy for tests
 function feedInput() {
-  for (const [mask, frames] of held) {
-    emu.pad.buttons |= mask;
-    if (frames <= 1) { held.delete(mask); emu.pad.buttons &= ~mask; }
-    else held.set(mask, frames - 1);
+  let bits = 0;
+  for (const mask of down) bits |= mask;
+  for (const [mask, frames] of latch) {
+    bits |= mask;
+    if (frames <= 1) latch.delete(mask); else latch.set(mask, frames - 1);
   }
+  emu.pad.buttons = bits;
+
   if (keyFrames > 0) {
     keyFrames--;
-    if (keyFrames === 2) key = 0;             // a gap, so repeats are seen
+    if (keyFrames === 2) key = 0;             /* a gap, so repeats are seen */
   } else if (typed.length) {
     key = typed.shift();
     keyFrames = 5;

@@ -31,7 +31,7 @@
 #define RUN_X    (DESK_X + DESK_W - 128)
 #define CLOSE_X  (DESK_X + DESK_W - 64)
 
-#define ROW_H 32                /* name and blurb, on the character grid */
+#define ROW_H 48                /* two lines of text and a line of air */
 
 static int hit(int x, int y, int bx, int by, int bw, int bh)
 {
@@ -89,9 +89,9 @@ static void text_at(int x, int y, const char *s, u16 c)
  * enough to swallow a button press. */
 static void draw_row(int i, int on)
 {
-    int y = 144 + i * ROW_H;
+    int y = 112 + i * ROW_H;
 
-    gfx_box(56, y - 2, 528, ROW_H - 4, on ? RGB(40, 52, 96) : c_win);
+    gfx_box(56, y, 528, 32, on ? RGB(40, 52, 96) : c_win);
     text_at(72, y, on ? ">" : " ", c_cyan);
     text_at(88, y, apps[i].name, on ? c_amber : c_text);
     text_at(88, y + 16, apps[i].blurb, c_dim);
@@ -102,15 +102,15 @@ static void draw_desktop(int sel)
     int i;
 
     gfx_box(0, 16, SCREEN_W, SCREEN_H - 16, c_desk);
-    gfx_box(48, 80, 544, 296, c_win);
-    gfx_box(48, 80, 544, 20, c_bar);
-    gfx_frame(48, 80, 544, 296, c_edge);
-    text_at(56, 80, "n64forthos", c_ink);
-    text_at(56, 112, "A Forth system with a desktop. Pick something:", c_dim);
+    gfx_box(48, 48, 544, 384, c_win);
+    gfx_box(48, 48, 544, 20, c_bar);
+    gfx_frame(48, 48, 544, 384, c_edge);
+    text_at(56, 48, "n64forthos", c_ink);
+    text_at(56, 80, "A Forth system with a desktop. Pick something:", c_dim);
 
     for (i = 0; i < NAPPS; i++)
         draw_row(i, i == sel);
-    text_at(56, 352, "d-pad select or point and click     A open", c_dim);
+    text_at(56, 400, "d-pad select or point and click     A open", c_dim);
 }
 
 /* ------------------------------------------------------- an app's window */
@@ -518,7 +518,7 @@ void desktop_run(void)
                 int i;
 
                 for (i = 0; i < NAPPS; i++)
-                    if (hit(ms->x, ms->y, 56, 142 + i * ROW_H, 528, ROW_H - 4)) {
+                    if (hit(ms->x, ms->y, 56, 112 + i * ROW_H, 528, 32)) {
                         gfx_cursor_hide();
                         draw_row(sel, 0);
                         sel = i;
