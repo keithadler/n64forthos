@@ -96,6 +96,12 @@ instructions a pass — **under a second**, so it animates. A Forth cousin of
 [superfx-navier-stokes](https://github.com/keithadler/superfx-navier-stokes),
 which did the same construction on a Super FX chip.
 
+**Life** ([src/apps/life.fth](src/apps/life.fth)) — Conway's life, 64×64 on a
+torus, two generations held in the dictionary. A generation a pass, and it
+runs until you stop it.
+
+![Life](docs/img/app-life.png)
+
 **Console** — the prompt, on the on-screen keyboard or a real one.
 
 **Devices** — what answered on each of the four joybus channels, live, and

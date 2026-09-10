@@ -146,7 +146,7 @@ def run_repl(rom="build/n64forthos.z64"):
     check(m.pads[2] is not None and m.pads[2]["kind"] == "keyboard",
           "a keyboard is on channel 3")
 
-    open_from_desktop(m, 3)                     # the Console
+    open_from_desktop(m, 4)                     # the Console
     lines = screen.decode(m.framebuffer()[2])
     check(any("d-pad or mouse" in l for l in lines), "the console is up")
 
@@ -186,6 +186,7 @@ def run_desktop(rom="build/n64forthos.z64"):
     check("Console" in text, "the desktop lists the console")
 
     check("Navier-Stokes" in text, "the desktop lists the Navier-Stokes demo")
+    check("Life" in text, "the desktop lists Life")
     check("Devices" in text, "the desktop lists the devices window")
 
     # A pointer: put it over the first row and click.
@@ -232,6 +233,19 @@ def run_desktop(rom="build/n64forthos.z64"):
     check(reds > 200, f"the left wall came out red ({reds} pixels)")
     check(greens > 200, f"the right wall came out green ({greens} pixels)")
     m.save_png("captures/app-cornell.png")
+
+    hold(m, PAD_B)                              # stop the trace
+    hold(m, PAD_B, frames=12)                   # close the window
+    tap(m, PAD_DOWN)
+    tap(m, PAD_A, gap=20)                       # Life
+    m.run(m.icount + 60 * FRAME)
+    tap(m, PAD_A, gap=1)
+    m.run(m.icount + 30_000_000)
+    seen = canvas_colours(m.framebuffer()[2])
+    check(len(seen) >= 2, "Life is alive on the canvas")
+    lines = screen.decode(m.framebuffer()[2])
+    check(any("of 64" in l or "pass" in l for l in lines),
+          "and generating: it reports rows, then passes")
     return m
 
 

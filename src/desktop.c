@@ -11,6 +11,7 @@
 #include "apps/mandel_fth.h"
 #include "apps/cornell_fth.h"
 #include "apps/navier_fth.h"
+#include "apps/life_fth.h"
 
 #define DESK_X   8
 #define DESK_Y   32
@@ -29,6 +30,8 @@
 
 #define RUN_X    (DESK_X + DESK_W - 128)
 #define CLOSE_X  (DESK_X + DESK_W - 64)
+
+#define ROW_H 32                /* name and blurb, on the character grid */
 
 static int hit(int x, int y, int bx, int by, int bw, int bh)
 {
@@ -54,6 +57,8 @@ static const app_t apps[] = {
       cornell_fth, "ROW", APP_FORTH },
     { "Navier-Stokes", "the finite-time blowup, in similarity variables",
       navier_fth, "ROW", APP_FORTH },
+    { "Life", "Conway's life, 64 by 64, on a torus",
+      life_fth, "ROW", APP_FORTH },
     { "Console", "the Forth prompt, keyboard or controller", 0, 0,
       APP_CONSOLE },
     { "Devices", "what is plugged in, and teaching it the keyboard", 0, 0,
@@ -84,9 +89,9 @@ static void text_at(int x, int y, const char *s, u16 c)
  * enough to swallow a button press. */
 static void draw_row(int i, int on)
 {
-    int y = 144 + i * 48;
+    int y = 144 + i * ROW_H;
 
-    gfx_box(56, y - 4, 528, 44, on ? RGB(40, 52, 96) : c_win);
+    gfx_box(56, y - 2, 528, ROW_H - 4, on ? RGB(40, 52, 96) : c_win);
     text_at(72, y, on ? ">" : " ", c_cyan);
     text_at(88, y, apps[i].name, on ? c_amber : c_text);
     text_at(88, y + 16, apps[i].blurb, c_dim);
@@ -97,15 +102,15 @@ static void draw_desktop(int sel)
     int i;
 
     gfx_box(0, 16, SCREEN_W, SCREEN_H - 16, c_desk);
-    gfx_box(48, 80, 544, 328, c_win);
+    gfx_box(48, 80, 544, 296, c_win);
     gfx_box(48, 80, 544, 20, c_bar);
-    gfx_frame(48, 80, 544, 328, c_edge);
+    gfx_frame(48, 80, 544, 296, c_edge);
     text_at(56, 80, "n64forthos", c_ink);
     text_at(56, 112, "A Forth system with a desktop. Pick something:", c_dim);
 
     for (i = 0; i < NAPPS; i++)
         draw_row(i, i == sel);
-    text_at(56, 384, "d-pad select or point and click     A open", c_dim);
+    text_at(56, 352, "d-pad select or point and click     A open", c_dim);
 }
 
 /* ------------------------------------------------------- an app's window */
@@ -497,7 +502,7 @@ void desktop_run(void)
                 int i;
 
                 for (i = 0; i < NAPPS; i++)
-                    if (hit(ms->x, ms->y, 56, 140 + i * 48, 528, 44)) {
+                    if (hit(ms->x, ms->y, 56, 142 + i * ROW_H, 528, ROW_H - 4)) {
                         gfx_cursor_hide();
                         draw_row(sel, 0);
                         sel = i;
