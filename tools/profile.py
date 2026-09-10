@@ -27,7 +27,13 @@ def symbols(elf):
     return syms
 
 
+DICT_BASE = 0x80300000
+DICT_END = DICT_BASE + (512 << 10)
+
+
 def name_for(syms, pc):
+    if DICT_BASE <= pc < DICT_END:
+        return "(compiled Forth)"
     lo, hi = 0, len(syms) - 1
     best = "?"
     while lo <= hi:

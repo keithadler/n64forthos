@@ -22,7 +22,7 @@ and the prompt takes dictation.
 make            # build/n64forthos.z64, a 64 MiB cartridge image
 make serve      # http://127.0.0.1:8795 -- run it in a browser, with your
                 # own mouse and keyboard wired into it
-make test       # boot it headless: 102 Forth assertions and 30 system checks
+make test       # boot it headless: 139 Forth assertions and 30 system checks
 make gui        # run it in mupen64plus
 ```
 
@@ -127,15 +127,25 @@ against them; `@` and `!` check their address and alignment inline. Compiled
 code is written through the uncached alias and the instruction cache is
 invalidated over it — the part an emulator would never have made you do.
 
-| | interpreted | compiled |
-| --- | --- | --- |
-| Mandelbrot | 4,278 instructions a pixel | **1,731** — 2.5× |
-| Navier–Stokes | 1,548 | **580** — 2.7× |
-| Cornell box | 18,769 | **12,913** — 1.45× |
+| | interpreted | compiled | a full frame |
+| --- | --- | --- | --- |
+| Cornell box | 18,769 instructions a pixel | **2,719** — 6.9× | 1.5 s |
+| Navier–Stokes | 1,548 | **498** — 3.1× | 0.3 s a pass |
+| Mandelbrot | 4,278 | **1,416** — 3.0× | 0.8 s |
 
-The ray tracer gains least because it spends its time inside helpers — one
-division is a call, and a call is not something compiling the caller makes
-faster.
+Thirty-odd words are inlined rather than called — the stack shuffles, the
+arithmetic and comparisons, `@` and `!` with their checks, the shifts, `MIN`
+and `MAX`, `>R` and `R>` straight onto the return stack, and `F*` through the
+64-bit product. Everything else is a call to the same primitive the
+interpreter runs.
+
+Three of the bugs in getting here are worth keeping: a stack check at word
+entry cannot be sound across a loop; `lui`/`lw` sign-extends its offset, so
+the upper half needs rounding up; and a branch offset counts from *after* the
+delay slot, which made an inlined `MIN` return the larger of the two. The
+last one is the reason [`test/tests.fth`](test/tests.fth) now runs its
+arithmetic twice — once interpreted, once inside definitions, because only
+the second is compiled and the two have to agree. 139 assertions.
 
 ### What optimisation actually bought
 
@@ -152,7 +162,7 @@ Measured, not guessed — `tools/bench.py` counts instructions a pixel and
 | a fast path for hot words in the inner interpreter | **nothing** — `prim()` was already inlined; reverted |
 | `-O3` | **slower**, and bigger; reverted |
 | the RDP filling rectangles instead of the CPU | **2.4×** on the interface |
-| compiling definitions to MIPS | **2.5×** on the applications |
+| compiling definitions to MIPS | **3–7×** on the applications |
 
 The floor used to be the interpreter itself, at about 36 instructions per
 Forth word. Both ways past it are now taken: the RDP does the fills, and
@@ -226,7 +236,7 @@ rather have an ELF.
 
 **A test cartridge** runs [`test/tests.fth`](test/tests.fth) at boot and
 leaves the pass and fail counts in RDRAM, where
-[`tools/check.py`](tools/check.py) reads them back out of the emulator. 102
+[`tools/check.py`](tools/check.py) reads them back out of the emulator. 139
 assertions, thirteen of them deliberate errors — divide by zero, unaligned
 store, an `IF` that never closes, a dictionary overflow, a stack overflow —
 each followed by assertions that the system still computes and still has an

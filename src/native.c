@@ -54,6 +54,10 @@
 #define I_MULT(rs, rt)      (((rs) << 21) | ((rt) << 16) | 0x18)
 #define I_MFHI(rd)          (((rd) << 11) | 0x10)
 #define I_MFLO(rd)          (((rd) << 11) | 0x12)
+#define I_NOR(rd, rs, rt)   (((rs) << 21) | ((rt) << 16) | ((rd) << 11) | 0x27)
+#define I_SLLV(rd, rt, rs)  (((rs) << 21) | ((rt) << 16) | ((rd) << 11) | 0x04)
+#define I_SRLV(rd, rt, rs)  (((rs) << 21) | ((rt) << 16) | ((rd) << 11) | 0x06)
+#define I_SRAV(rd, rt, rs)  (((rs) << 21) | ((rt) << 16) | ((rd) << 11) | 0x07)
 #define I_ANDI(rt, rs, imm) (0x30000000u | ((rs) << 21) | ((rt) << 16) | ((imm) & 0xFFFF))
 #define I_SLTIU(rt, rs, im) (0x2C000000u | ((rs) << 21) | ((rt) << 16) | ((im) & 0xFFFF))
 #define I_BEQ(rs, rt, off)  (0x10000000u | ((rs) << 21) | ((rt) << 16) | ((off) & 0xFFFF))
@@ -63,8 +67,8 @@
 #define I_NOP               0x00000000u
 #define I_MOVE(rd, rs)      I_ADDU(rd, rs, 0)
 
-#define MAX_FIXUPS 256
-#define MAX_LABELS 512
+#define MAX_FIXUPS 512
+#define MAX_LABELS 1024
 
 /* Helpers that live in forth.c, where the interpreter's state is. */
 extern cell *fs_prim(cell *stack, cell code);
@@ -77,12 +81,14 @@ extern cell *fs_bad_stack(cell *stack);
 extern int fs_aborted(void);
 extern void icache_invalidate(void *addr, int bytes);
 
+static const char *why;
 static u32 compiled_words;      /* how many definitions have machine code */
 static u32 refused_words;       /* and how many the generator would not take */
 
 u32 native_compiled(void) { return compiled_words; }
 u32 native_refused(void) { return refused_words; }
 
+static u32 *bail_at;            /* the stack/address bail-out, known early */
 static u32 *out;                /* where the next instruction goes */
 static u32 *out_limit;
 static int failed;
@@ -154,18 +160,14 @@ static void want_epilogue(u32 *at)
  * writing over the dictionary when a program is wrong. */
 static void emit_move_sp(int delta)
 {
-    u32 *at;
-
     emit(I_ADDIU(R_T8, R_T8, delta));
     if (delta > 0) {
         emit(I_SLTU(R_V0, R_S1, R_T8));
     } else {
         emit(I_SLTU(R_V0, R_T8, R_S2));
     }
-    at = out;
-    emit(I_BNE(R_V0, 0, 0));
+    emit(I_BNE(R_V0, 0, (int)(bail_at - (out + 1))));
     emit(I_NOP);
-    want_branch(at, -1);                /* -1 is the bail-out */
 }
 
 static void emit_push_reg(int reg)
@@ -213,32 +215,25 @@ static void emit_call(u32 addr, int check_abort)
  * to the exception handler, which says what happened. */
 static void emit_addr_check(int reg, int align)
 {
-    u32 *at;
-
     emit(I_SRL(R_V0, reg, 29));
     emit(I_ADDIU(R_V0, R_V0, -4));
     emit(I_SLTIU(R_V0, R_V0, 2));
-    at = out;
-    emit(I_BEQ(R_V0, 0, 0));            /* not KSEG0/KSEG1 -> bail */
+    emit(I_BEQ(R_V0, 0, (int)(bail_at - (out + 1))));   /* not KSEG0/KSEG1 */
     emit(I_NOP);
-    want_branch(at, -1);                /* -1 marks the bail-out label */
     if (align > 1) {
         emit(I_ANDI(R_V0, reg, align - 1));
-        at = out;
-        emit(I_BNE(R_V0, 0, 0));
+        emit(I_BNE(R_V0, 0, (int)(bail_at - (out + 1))));
         emit(I_NOP);
-        want_branch(at, -1);
     }
 }
 
 /* ---------------------------------------------------------- translation */
 
-static int translate(cell xt, u32 *dest, int words, u32 **end)
+static int translate(cell xt, cell thread_end, u32 *dest, int words, u32 **end)
 {
     cell *ip = (cell *)(u32)(xt + 8);
     cell *thread = ip;
     int i;
-    u32 *bail;
 
     out = dest;
     out_limit = dest + words;
@@ -255,9 +250,30 @@ static int translate(cell xt, u32 *dest, int words, u32 **end)
     emit_imm(R_S1, (cell)forth_stack_top());
     emit_imm(R_S2, (cell)forth_stack_base());
 
+    /* The bail-out goes here, before the body, so that every check inside
+     * the body can branch straight to it instead of queueing a fixup: a word
+     * of any size has hundreds of those. */
+    {
+        u32 *over = out;
+
+        emit(I_BEQ(0, 0, 0));
+        emit(I_NOP);
+        bail_at = out;
+        emit(I_MOVE(R_A0, R_T8));
+        emit(I_JAL((u32)&fs_bad_stack));
+        emit(I_NOP);
+        emit(I_MOVE(R_T8, R_V0));
+        want_epilogue(out);
+        emit(I_BEQ(0, 0, 0));
+        emit(I_NOP);
+        *(volatile u32 *)UNCACHED(over) =
+            (*(volatile u32 *)UNCACHED(over) & 0xFFFF0000u) |
+            ((int)(out - (over + 1)) & 0xFFFF);
+    }
+
     /* The body. */
     ip = thread;
-    for (i = 0; i < 4096 && !failed; i++) {
+    for (i = 0; i < 4096 && !failed && (cell)(u32)ip < thread_end; i++) {
         cell tok_addr = (cell)(u32)ip;
         cell tok = *ip++;
         cell code = *(cell *)(u32)tok;
@@ -265,11 +281,11 @@ static int translate(cell xt, u32 *dest, int words, u32 **end)
         mark_label(tok_addr);
 
         switch (code) {
-        case P_EXIT:
+        case P_EXIT:                    /* may be an early one: keep going */
             want_epilogue(out);
             emit(I_BEQ(0, 0, 0));
             emit(I_NOP);
-            goto done;
+            break;
 
         case P_LIT:
             emit_imm(R_AT, *ip++);
@@ -376,6 +392,110 @@ static int translate(cell xt, u32 *dest, int words, u32 **end)
                 emit(I_SRA(R_AT, R_AT, 1));
             emit(I_SW(R_AT, -4, R_T8));
             break;
+
+        case P_NEGATE:
+            emit(I_LW(R_AT, -4, R_T8));
+            emit(I_SUBU(R_AT, 0, R_AT));
+            emit(I_SW(R_AT, -4, R_T8));
+            break;
+
+        case P_INVERT:
+            emit(I_LW(R_AT, -4, R_T8));
+            emit(I_NOR(R_AT, R_AT, 0));
+            emit(I_SW(R_AT, -4, R_T8));
+            break;
+
+        case P_2DROP:
+            emit_move_sp(-8);
+            break;
+
+        case P_NIP:
+            emit(I_LW(R_AT, -4, R_T8));
+            emit(I_SW(R_AT, -8, R_T8));
+            emit_move_sp(-4);
+            break;
+
+        case P_NE:
+            emit(I_LW(R_AT, -8, R_T8));
+            emit(I_LW(R_V0, -4, R_T8));
+            emit(I_XOR(R_AT, R_AT, R_V0));
+            emit(I_SLTU(R_AT, 0, R_AT));
+            emit(I_SUBU(R_AT, 0, R_AT));
+            emit(I_SW(R_AT, -8, R_T8));
+            emit_move_sp(-4);
+            break;
+
+        case P_ZLT: case P_ZGT:
+            emit(I_LW(R_AT, -4, R_T8));
+            if (code == P_ZLT)
+                emit(I_SLT(R_AT, R_AT, 0));
+            else
+                emit(I_SLT(R_AT, 0, R_AT));
+            emit(I_SUBU(R_AT, 0, R_AT));
+            emit(I_SW(R_AT, -4, R_T8));
+            break;
+
+        case P_LSHIFT: case P_RSHIFT:
+            emit(I_LW(R_AT, -8, R_T8));
+            emit(I_LW(R_V0, -4, R_T8));
+            if (code == P_LSHIFT)
+                emit(I_SLLV(R_AT, R_AT, R_V0));
+            else
+                emit(I_SRLV(R_AT, R_AT, R_V0));
+            emit(I_SW(R_AT, -8, R_T8));
+            emit_move_sp(-4);
+            break;
+
+        case P_MIN: case P_MAX:
+            emit(I_LW(R_AT, -8, R_T8));
+            emit(I_LW(R_V0, -4, R_T8));
+            if (code == P_MIN)
+                emit(I_SLT(R_V1, R_AT, R_V0));
+            else
+                emit(I_SLT(R_V1, R_V0, R_AT));
+            emit(I_BNE(R_V1, 0, 2));    /* keep $at: over the delay slot
+                                         * and over the move itself */
+            emit(I_NOP);
+            emit(I_MOVE(R_AT, R_V0));
+            emit(I_SW(R_AT, -8, R_T8));
+            emit_move_sp(-4);
+            break;
+
+        case P_TOR: case P_RFROM: case P_RFETCH: {
+            u32 rsp_at = forth_rsp_addr();
+            u32 rbase = forth_rstack_base();
+
+            emit_load_global(R_V0, rsp_at);         /* the return stack index */
+            emit(I_SLL(R_V1, R_V0, 2));
+            emit(I_LUI(R_A0, rbase >> 16));
+            emit(I_ORI(R_A0, R_A0, rbase & 0xFFFF));
+            emit(I_ADDU(R_V1, R_V1, R_A0));         /* &rstack[rsp] */
+            if (code == P_RFETCH) {                 /* R@ leaves rsp alone */
+                emit(I_LW(R_AT, -4, R_V1));
+                emit_push_reg(R_AT);
+                break;
+            }
+            if (code == P_TOR) {
+                emit(I_LW(R_AT, -4, R_T8));
+                emit(I_SW(R_AT, 0, R_V1));
+                emit(I_ADDIU(R_V0, R_V0, 1));
+            } else {
+                emit(I_LW(R_AT, -4, R_V1));
+                emit(I_ADDIU(R_V0, R_V0, -1));
+            }
+            {   /* Write the index back before touching the data stack: the
+                 * stack check below is what clobbers $v0. */
+                u32 hi = (rsp_at + 0x8000) >> 16;
+
+                emit(I_LUI(R_V1, hi));
+                emit(I_SW(R_V0, (int)(rsp_at - (hi << 16)), R_V1));
+            }
+            if (code == P_TOR)
+                emit_move_sp(-4);
+            else
+                emit_push_reg(R_AT);
+            break;
+        }
 
         case P_ZEQ:
             emit(I_LW(R_AT, -4, R_T8));
@@ -512,6 +632,7 @@ static int translate(cell xt, u32 *dest, int words, u32 **end)
         /* Words that reach into the interpreter itself are left alone. */
         case P_EXECUTE: case P_WORDS: case P_SEE: case P_DUMP:
         case P_COLON: case P_SEMI: case P_LEAVE:
+            why = "a word only the interpreter can run";
             return 0;
 
         default:                        /* everything else: call the primitive */
@@ -524,16 +645,10 @@ static int translate(cell xt, u32 *dest, int words, u32 **end)
             break;
         }
     }
-done:
-    if (failed)
+    if (failed) {
+        why = "out of room, or too many labels";
         return 0;
-
-    /* The bail-out for a stack that will not fit, and for a bad address. */
-    bail = out;
-    emit(I_MOVE(R_A0, R_T8));
-    emit(I_JAL((u32)&fs_bad_stack));
-    emit(I_NOP);
-    emit(I_MOVE(R_T8, R_V0));
+    }
 
     /* Epilogue. */
     {
@@ -560,23 +675,23 @@ done:
             u32 *target = 0;
             int k;
 
-            if (fixups[n].token == -1) {
-                target = bail;
-            } else {
-                for (k = 0; k < nlabels; k++)
-                    if (labels[k].token == fixups[n].token) {
-                        target = labels[k].code;
-                        break;
-                    }
+            for (k = 0; k < nlabels; k++)
+                if (labels[k].token == fixups[n].token) {
+                    target = labels[k].code;
+                    break;
+                }
+            if (!target) {
+                why = "a branch with no target";
+                return 0;
             }
-            if (!target)
-                return 0;               /* a branch we cannot resolve */
             {
                 int off = (int)(target - (fixups[n].at + 1));
                 volatile u32 *at = (volatile u32 *)UNCACHED(fixups[n].at);
 
-                if (off < -32768 || off > 32767)
+                if (off < -32768 || off > 32767) {
+                    why = "a branch too far to reach";
                     return 0;
+                }
                 *at = (*at & 0xFFFF0000u) | (off & 0xFFFF);
             }
         }
@@ -587,7 +702,7 @@ done:
 }
 
 /* Compile a colon definition, if we can.  Returns 1 if it now has code. */
-int native_compile(cell xt)
+int native_compile(cell xt, cell thread_end)
 {
     u32 *dest;
     u32 *end;
@@ -597,11 +712,20 @@ int native_compile(cell xt)
         return 0;
     dest = (u32 *)(u32)((forth_here() + 7) & ~7u);
     room = (int)((forth_limit() - (u32)dest) / 4) - 64;
-    if (room < 64)
-        return 0;
-
-    if (!translate(xt, dest, room, &end)) {
+    if (room < 64) {
+        why = "no room left in the dictionary";
         refused_words++;
+        return 0;
+    }
+
+    why = 0;
+    if (!translate(xt, thread_end, dest, room, &end)) {
+        refused_words++;
+        con_puts("not compiled: ");
+        forth_name_of(xt);
+        con_puts(" -- ");
+        con_puts(why ? why : "no reason recorded");
+        con_putc('\n');
         return 0;
     }
 

@@ -156,6 +156,49 @@ FB $A0200000 IS
 SCREEN-W 640 IS
 SCREEN-H 480 IS
 
+\ --- the same arithmetic, but inside definitions ---------------------------
+\ Everything above runs interpreted, one line at a time.  A definition is
+\ compiled to machine code, and the two have to agree -- an inlined MIN once
+\ returned the larger of the two and nothing here noticed.
+: C-MIN 3 9 MIN ;      C-MIN 3 IS
+: C-MIN2 9 3 MIN ;     C-MIN2 3 IS
+: C-MAX 3 9 MAX ;      C-MAX 9 IS
+: C-MAX2 9 3 MAX ;     C-MAX2 9 IS
+: C-ADD 2 3 + ;        C-ADD 5 IS
+: C-SUB 7 3 - ;        C-SUB 4 IS
+: C-MUL 6 7 * ;        C-MUL 42 IS
+: C-NEG 5 NEGATE ;     C-NEG -5 IS
+: C-INV 0 INVERT ;     C-INV -1 IS
+: C-NIP 1 2 NIP ;      C-NIP 2 IS
+: C-2DROP 1 2 3 2DROP ;  C-2DROP 1 IS
+: C-NE 3 4 <> ;        C-NE -1 IS
+: C-EQ 4 4 = ;         C-EQ -1 IS
+: C-LT 3 4 < ;         C-LT -1 IS
+: C-GT 4 3 > ;         C-GT -1 IS
+: C-ZLT -1 0< ;        C-ZLT -1 IS
+: C-ZGT 1 0> ;         C-ZGT -1 IS
+: C-ZEQ 0 0= ;         C-ZEQ -1 IS
+: C-LSH 1 4 LSHIFT ;   C-LSH 16 IS
+: C-RSH 256 4 RSHIFT ; C-RSH 16 IS
+: C-RSTACK 5 >R R@ R> DROP ;   C-RSTACK 5 IS
+: C-RSTACK2 7 >R R> ;  C-RSTACK2 7 IS
+: C-FMUL 131072 98304 F* ;     C-FMUL 196608 IS
+: C-FDIV 131072 65536 F/ ;     C-FDIV 131072 IS
+: C-FSQRT 262144 FSQRT ;       C-FSQRT 131072 IS
+: C-ABS -7 ABS ;       C-ABS 7 IS
+: C-MOD 17 5 MOD ;     C-MOD 2 IS
+: C-DIV 20 4 / ;       C-DIV 5 IS
+: C-ROT 1 2 3 ROT ;    C-ROT 1 IS CLEAR
+: C-VAR V @ ;          8 V ! C-VAR 8 IS
+: C-LOOP 0 5 0 DO I + LOOP ;   C-LOOP 10 IS
+: C-NEST 0 3 0 DO 3 0 DO 1+ LOOP LOOP ;  C-NEST 9 IS
+: C-IF 5 0> IF 1 ELSE 2 THEN ; C-IF 1 IS
+: C-IF2 -5 0> IF 1 ELSE 2 THEN ; C-IF2 2 IS
+: C-BEGIN 0 BEGIN 1+ DUP 4 = UNTIL ;  C-BEGIN 4 IS
+: C-EARLY DUP 0> IF DROP 1 EXIT THEN DROP 2 ;
+5 C-EARLY 1 IS
+-5 C-EARLY 2 IS
+
 \ --- deliberate errors: each one must be survivable ------------------------
 0 0 /
 0 0 MOD

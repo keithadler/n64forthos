@@ -842,14 +842,14 @@ static void do_immediate_word(int code)
         }
         comma(xt_of("EXIT"));
         {   /* Now that the thread is whole, try to compile it. */
-            extern int native_compile(cell xt);
+            extern int native_compile(cell xt, cell thread_end);
             cell h = def_header;
 
             def_header = 0;
             state = 0;
 #ifndef NO_NATIVE
             if (h)
-                native_compile(name_to_xt(h));
+                native_compile(name_to_xt(h), (cell)(u32)dp);
 #endif
         }
         break;
@@ -1452,6 +1452,16 @@ cell *fs_bad_stack(cell *stack)
 int fs_aborted(void)
 {
     return aborted;
+}
+
+void forth_name_of(cell xt)
+{
+    cell h = xt_to_header(xt);
+
+    if (h)
+        print_name(h);
+    else
+        con_puts("?");
 }
 
 u32 forth_abort_flag(void)

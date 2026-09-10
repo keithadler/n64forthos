@@ -238,7 +238,8 @@ void kmain(void)
     gfx_cls(RGB(8, 10, 30));            /* nothing on screen but the app */
     con_puts("compiling app\n");
     forth_eval_lines(APP_DEBUG_SRC);
-    con_printf("%u words\n", word_count());
+    con_printf("%u words, %u compiled, %u refused\n",
+               word_count(), native_compiled(), native_refused());
     con_puts("running\n");
     {   /* drive it the way the desktop does: a row at a time */
         int rows = forth_call("ROWS") ? forth_pop() : 0;
