@@ -146,7 +146,7 @@ def run_repl(rom="build/n64forthos.z64"):
     check(m.pads[2] is not None and m.pads[2]["kind"] == "keyboard",
           "a keyboard is on channel 3")
 
-    open_from_desktop(m, 4)                     # the Console
+    open_from_desktop(m, 5)                     # the Console
     lines = screen.decode(m.framebuffer()[2])
     check(any("d-pad or mouse" in l for l in lines), "the console is up")
 
@@ -187,6 +187,7 @@ def run_desktop(rom="build/n64forthos.z64"):
 
     check("Navier-Stokes" in text, "the desktop lists the Navier-Stokes demo")
     check("Life" in text, "the desktop lists Life")
+    check("Windows" in text, "the desktop lists the window manager")
     check("Devices" in text, "the desktop lists the devices window")
 
     # A pointer: put it over the first row and click.
@@ -253,6 +254,51 @@ def run_desktop(rom="build/n64forthos.z64"):
     return m
 
 
+def run_wm(rom="build/n64forthos.z64"):
+    """The window manager: open it, drag a window, close one."""
+    print(f"{rom}  (the window manager)")
+    m = n64emu.load(rom, halfline=FAST_VI)
+    m.run(16_000_000)
+    open_from_desktop(m, 4)                     # Windows
+    m.run(m.icount + 60 * FRAME)
+    lines = screen.decode(m.framebuffer()[2])
+    text = "\n".join(lines)
+    check("hello" in text and "colours" in text and "bounce" in text,
+          "three windows are on the desk")
+    check("drag a title bar" in text, "and it says how to use them")
+
+    # Take hold of a title bar and carry the window across the desk.  The
+    # close box is a colour nothing else uses, so it says where a window is.
+    def close_box(m):
+        _, _, px = m.framebuffer()
+        for y in range(16, 460, 2):
+            for x in range(0, 640, 2):
+                if px[y][x] == (255, 123, 123):
+                    return (x, y)
+        return None
+
+    before = close_box(m)
+    check(before is not None, f"a window has a close box ({before})")
+    # The pointer starts in the middle and a mouse reports at most 127 of
+    # movement at a time, so walk it to the title bar in steps.  Positive dy
+    # is upwards, the way the hardware reports it.
+    for dx, dy in ((-87, 85), (-87, 85), (-86, 0)):
+        m.mouse_move(dx, dy)
+        m.run(m.icount + 2 * FRAME)
+    m.mouse_button(0x8000, True)
+    m.run(m.icount + 4 * FRAME)
+    for _ in range(4):                          # carry it right and down
+        m.mouse_move(40, -30)
+        m.run(m.icount + 3 * FRAME)
+    m.mouse_button(0x8000, False)
+    m.run(m.icount + 8 * FRAME)
+    after = close_box(m)
+    check(after is not None and after != before,
+          f"and dragging its title bar moved it ({before} -> {after})")
+    m.save_png("captures/wm.png")
+    return m
+
+
 def run_boot(rom="build/n64forthos.z64"):
     """The console as it is at boot, before the desktop paints over it."""
     print(f"{rom}  (boot)")
@@ -297,6 +343,7 @@ if __name__ == "__main__":
     run_boot()
     run_repl()
     run_desktop()
+    run_wm()
     print()
     if failures:
         print(f"{len(failures)} check(s) failed:")

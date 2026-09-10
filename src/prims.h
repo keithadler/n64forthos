@@ -6,7 +6,7 @@ typedef s32 cell;                       /* the Forth cell, everywhere */
 
 enum {
     P_DOCOL = 0, P_DOVAR, P_DOCON, P_EXIT, P_LIT, P_SLIT, P_BRANCH, P_ZBRANCH,
-    P_DO, P_LOOP, P_I, P_J, P_LEAVE,
+    P_DO, P_LOOP, P_I, P_J, P_LEAVE, P_UNLOOP,
     P_DUP, P_QDUP, P_DROP, P_SWAP, P_OVER, P_ROT, P_NIP, P_TUCK, P_PICK,
     P_2DUP, P_2DROP, P_2SWAP,
     P_DEPTH, P_TOR, P_RFROM, P_RFETCH, P_ROLL,
@@ -28,7 +28,10 @@ enum {
     P_DRAWTEXT, P_BLIT, P_BLITKEY, P_SQUOTE, P_SQRUN,
     /* 16.16 fixed point, and where an app is allowed to draw */
     P_FMUL, P_FDIV, P_FSQRT, P_CANVASX, P_CANVASY, P_CANVASW, P_CANVASH,
-    P_KEYSET, P_MOUSEX, P_MOUSEY, P_MOUSEB
+    P_KEYSET, P_MOUSEX, P_MOUSEY, P_MOUSEB,
+    /* what a window manager written in Forth needs from the kernel */
+    P_CLIP, P_NOCLIP, P_SETCANVAS, P_POLL, P_BUTTONS, P_PRESSED,
+    P_MOUSEHIT, P_CURSOR, P_HIDECUR, P_TICKS
 };
 
 #endif /* PRIMS_H */

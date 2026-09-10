@@ -9,6 +9,44 @@
 #include "n64.h"
 #include "font.h"
 
+/* The clip rectangle.  Everything below stays inside it, which is what lets
+ * a window manager written in Forth draw a window's contents without them
+ * escaping over its neighbours. */
+static int clip_x, clip_y, clip_w = SCREEN_W, clip_h = SCREEN_H;
+
+void gfx_clip(int x, int y, int w, int h)
+{
+    if (x < 0) { w += x; x = 0; }
+    if (y < 0) { h += y; y = 0; }
+    if (x > SCREEN_W) x = SCREEN_W;
+    if (y > SCREEN_H) y = SCREEN_H;
+    if (x + w > SCREEN_W) w = SCREEN_W - x;
+    if (y + h > SCREEN_H) h = SCREEN_H - y;
+    clip_x = x;
+    clip_y = y;
+    clip_w = w < 0 ? 0 : w;
+    clip_h = h < 0 ? 0 : h;
+}
+
+void gfx_noclip(void)
+{
+    gfx_clip(0, 0, SCREEN_W, SCREEN_H);
+}
+
+void gfx_clip_get(int *x, int *y, int *w, int *h)
+{
+    *x = clip_x;
+    *y = clip_y;
+    *w = clip_w;
+    *h = clip_h;
+}
+
+static int clipped(int x, int y)
+{
+    return x < clip_x || y < clip_y ||
+           x >= clip_x + clip_w || y >= clip_y + clip_h;
+}
+
 u16 *gfx_fb(void)
 {
     extern u16 *fb_uncached(void);
@@ -17,7 +55,7 @@ u16 *gfx_fb(void)
 
 void gfx_plot(int x, int y, u16 c)
 {
-    if ((unsigned)x < SCREEN_W && (unsigned)y < SCREEN_H)
+    if (!clipped(x, y))
         gfx_fb()[y * SCREEN_W + x] = c;
 }
 
@@ -35,10 +73,12 @@ void gfx_box(int x, int y, int w, int h, u16 c)
         return;
     }
 
-    if (x < 0) { w += x; x = 0; }
-    if (y < 0) { h += y; y = 0; }
-    if (x + w > SCREEN_W) w = SCREEN_W - x;
-    if (y + h > SCREEN_H) h = SCREEN_H - y;
+    if (x < clip_x) { w -= clip_x - x; x = clip_x; }
+    if (y < clip_y) { h -= clip_y - y; y = clip_y; }
+    if (x + w > clip_x + clip_w) w = clip_x + clip_w - x;
+    if (y + h > clip_y + clip_h) h = clip_y + clip_h - y;
+    if (w <= 0 || h <= 0)
+        return;
     for (j = 0; j < h; j++) {
         u16 *p = fb + (y + j) * SCREEN_W + x;
         for (i = 0; i < w; i++)
@@ -114,6 +154,8 @@ void gfx_glyph(int x, int y, char ch, u16 fg, u16 bg, int opaque)
 
             if ((unsigned)px >= SCREEN_W)
                 continue;
+            if (clipped(px, py))
+                continue;
             if (bits & (0x80u >> col))
                 gfx_fb()[py * SCREEN_W + px] = fg;
             else if (opaque)
@@ -151,6 +193,8 @@ void gfx_blit(const u16 *src, int x, int y, int w, int h, int keyed)
             if ((unsigned)px >= SCREEN_W)
                 continue;
             if (keyed && !(p & 1))
+                continue;
+            if (clipped(px, py))
                 continue;
             fb[py * SCREEN_W + px] = p;
         }

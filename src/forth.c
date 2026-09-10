@@ -480,6 +480,7 @@ static void prim(int code, cell xt, cell **ipp)
         break;
     }
     case P_I:       push(rstack[rsp - 1]); break;
+    case P_UNLOOP:  (void)rpop(); (void)rpop(); break;
     case P_J:       push(rstack[rsp - 3]); break;
     case P_LEAVE:   rpop(); rpush(0x7FFFFFFF); break;
 
@@ -694,6 +695,25 @@ static void prim(int code, cell xt, cell **ipp)
     case P_MOUSEX:  push(input_mouse()->x); break;
     case P_MOUSEY:  push(input_mouse()->y); break;
     case P_MOUSEB:  push(input_mouse()->buttons); break;
+    case P_MOUSEHIT: push(input_mouse()->edges); break;
+    case P_POLL:    input_poll(); break;
+    case P_BUTTONS: push(input_buttons(0)); break;
+    case P_PRESSED: push(input_pressed(0)); break;
+    case P_TICKS:   push((cell)vi_frames()); break;
+    case P_CURSOR:  gfx_cursor_show(input_mouse()->x, input_mouse()->y,
+                                    RGB(255, 255, 255), RGB(0, 0, 0)); break;
+    case P_HIDECUR: gfx_cursor_hide(); break;
+    case P_NOCLIP:  gfx_noclip(); break;
+    case P_CLIP: {
+        cell h = pop(), w = pop(), y = pop(), x = pop();
+        gfx_clip((int)x, (int)y, (int)w, (int)h);
+        break;
+    }
+    case P_SETCANVAS: {
+        cell h = pop(), w = pop(), y = pop(), x = pop();
+        forth_set_canvas((int)x, (int)y, (int)w, (int)h);
+        break;
+    }
     case P_CANVASX: push(canvas[0]); break;
     case P_CANVASY: push(canvas[1]); break;
     case P_CANVASW: push(canvas[2]); break;
@@ -1271,7 +1291,7 @@ static const struct primdef prims[] = {
     { "(BRANCH)", P_BRANCH, 0 }, { "(0BRANCH)", P_ZBRANCH, 0 },
     { "(DO)", P_DO, 0 }, { "(LOOP)", P_LOOP, 0 },
     { "DO", P_DOIMM, IMMEDIATE }, { "LOOP", P_LOOPIMM, IMMEDIATE },
-    { "I", P_I, 0 }, { "J", P_J, 0 },
+    { "I", P_I, 0 }, { "J", P_J, 0 }, { "UNLOOP", P_UNLOOP, 0 },
     { "DUP", P_DUP, 0 }, { "?DUP", P_QDUP, 0 }, { "DROP", P_DROP, 0 },
     { "2DUP", P_2DUP, 0 }, { "2DROP", P_2DROP, 0 }, { "2SWAP", P_2SWAP, 0 },
     { "SWAP", P_SWAP, 0 }, { "OVER", P_OVER, 0 }, { "ROT", P_ROT, 0 },
@@ -1325,6 +1345,12 @@ static const struct primdef prims[] = {
     { "CANVAS-W", P_CANVASW, 0 }, { "CANVAS-H", P_CANVASH, 0 },
     { "KEY!", P_KEYSET, 0 }, { "MOUSE-X", P_MOUSEX, 0 },
     { "MOUSE-Y", P_MOUSEY, 0 }, { "MOUSE-B", P_MOUSEB, 0 },
+    { "MOUSE-HIT", P_MOUSEHIT, 0 }, { "POLL", P_POLL, 0 },
+    { "BUTTONS", P_BUTTONS, 0 }, { "PRESSED", P_PRESSED, 0 },
+    { "TICKS", P_TICKS, 0 }, { "CURSOR", P_CURSOR, 0 },
+    { "HIDE-CURSOR", P_HIDECUR, 0 },
+    { "CLIP", P_CLIP, 0 }, { "NOCLIP", P_NOCLIP, 0 },
+    { "SET-CANVAS", P_SETCANVAS, 0 },
 };
 
 void forth_init(void)

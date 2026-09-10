@@ -97,14 +97,15 @@ int rdp_ready(void)
  * inclusive lower-right corner. */
 void rdp_fill(int x, int y, int w, int h, u16 colour)
 {
-    int x1, y1;
+    int x1, y1, cx, cy, cw, ch;
 
     if (!ready || w <= 0 || h <= 0)
         return;
-    if (x < 0) { w += x; x = 0; }
-    if (y < 0) { h += y; y = 0; }
-    if (x + w > SCREEN_W) w = SCREEN_W - x;
-    if (y + h > SCREEN_H) h = SCREEN_H - y;
+    gfx_clip_get(&cx, &cy, &cw, &ch);
+    if (x < cx) { w -= cx - x; x = cx; }
+    if (y < cy) { h -= cy - y; y = cy; }
+    if (x + w > cx + cw) w = cx + cw - x;
+    if (y + h > cy + ch) h = cy + ch - y;
     if (w <= 0 || h <= 0)
         return;
     x1 = x + w - 1;

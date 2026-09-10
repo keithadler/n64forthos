@@ -9,6 +9,7 @@
 #include "apps/cornell_fth.h"
 #include "apps/navier_fth.h"
 #include "apps/life_fth.h"
+#include "apps/wm_fth.h"
 #endif
 
 #define FB_PHYS   0x00200000u                   /* 2 MiB into RDRAM */

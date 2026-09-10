@@ -12,6 +12,7 @@
 #include "apps/cornell_fth.h"
 #include "apps/navier_fth.h"
 #include "apps/life_fth.h"
+#include "apps/wm_fth.h"
 
 #define DESK_X   8
 #define DESK_Y   32
@@ -41,6 +42,7 @@ static int hit(int x, int y, int bx, int by, int bw, int bh)
 #define APP_FORTH   0
 #define APP_CONSOLE 1
 #define APP_DEVICES 2
+#define APP_FULL    3   /* the application owns the whole screen */
 
 typedef struct {
     const char *name;
@@ -59,6 +61,8 @@ static const app_t apps[] = {
       navier_fth, "ROW", APP_FORTH },
     { "Life", "Conway's life, 64 by 64, on a torus",
       life_fth, "ROW", APP_FORTH },
+    { "Windows", "a window manager, written in Forth", wm_fth, "FRAME",
+      APP_FULL },
     { "Console", "the Forth prompt, keyboard or controller", 0, 0,
       APP_CONSOLE },
     { "Devices", "what is plugged in, and teaching it the keyboard", 0, 0,
@@ -102,15 +106,15 @@ static void draw_desktop(int sel)
     int i;
 
     gfx_box(0, 16, SCREEN_W, SCREEN_H - 16, c_desk);
-    gfx_box(48, 48, 544, 384, c_win);
+    gfx_box(48, 48, 544, 400, c_win);
     gfx_box(48, 48, 544, 20, c_bar);
-    gfx_frame(48, 48, 544, 384, c_edge);
+    gfx_frame(48, 48, 544, 400, c_edge);
     text_at(56, 48, "n64forthos", c_ink);
+    text_at(320, 48, "d-pad or point and click, A opens", c_ink);
     text_at(56, 80, "A Forth system with a desktop. Pick something:", c_dim);
 
     for (i = 0; i < NAPPS; i++)
         draw_row(i, i == sel);
-    text_at(56, 400, "d-pad select or point and click     A open", c_dim);
 }
 
 /* ------------------------------------------------------- an app's window */
@@ -330,6 +334,40 @@ static void open_app(const app_t *app)
     }
 }
 
+/* An application that owns the screen: no source pane, no canvas of its own,
+ * just a word called once a frame.  The window manager is one of these,
+ * because a window manager inside a window is a poor demonstration. */
+static void full_app(const app_t *app)
+{
+    u32 mark = forth_mark();
+
+    gfx_noclip();
+    gfx_box(0, 16, SCREEN_W, SCREEN_H - 16, RGB(16, 20, 44));
+    forth_set_canvas(0, 16, SCREEN_W, SCREEN_H - 16);
+    forth_eval_lines(app->source);
+    forth_call("START");
+
+    for (;;) {
+        input_poll();
+        if (input_pressed(0) & PAD_B) {
+            gfx_cursor_hide();
+            gfx_noclip();
+            forth_release(mark);
+            forth_set_canvas(0, 0, SCREEN_W, SCREEN_H);
+            return;
+        }
+        if (!forth_call(app->entry)) {
+            gfx_noclip();
+            con_puts("the application stopped; B to leave\n");
+            forth_release(mark);
+            forth_set_canvas(0, 0, SCREEN_W, SCREEN_H);
+            return;
+        }
+        kernel_status_bar();
+        vi_wait_vblank();
+    }
+}
+
 /* ----------------------------------------------------------- the devices
  *
  * With a BlueRetro adapter the four channels can hold a controller, a mouse
@@ -542,6 +580,8 @@ void desktop_run(void)
             gfx_cursor_hide();
             if (apps[sel].kind == APP_FORTH) {
                 open_app(&apps[sel]);
+            } else if (apps[sel].kind == APP_FULL) {
+                full_app(&apps[sel]);
             } else if (apps[sel].kind == APP_DEVICES) {
                 devices_app();
             } else {

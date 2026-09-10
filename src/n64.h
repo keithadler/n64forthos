@@ -130,6 +130,9 @@ void gfx_line(int x0, int y0, int x1, int y1, u16 c);
 void gfx_glyph(int x, int y, char ch, u16 fg, u16 bg, int opaque);
 int gfx_text(int x, int y, const char *s, int len, u16 c);
 void gfx_blit(const u16 *src, int x, int y, int w, int h, int keyed);
+void gfx_clip(int x, int y, int w, int h);
+void gfx_noclip(void);
+void gfx_clip_get(int *x, int *y, int *w, int *h);
 void gfx_cursor_show(int x, int y, u16 fill, u16 edge);
 void gfx_cursor_hide(void);
 

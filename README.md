@@ -22,7 +22,7 @@ and the prompt takes dictation.
 make            # build/n64forthos.z64, a 64 MiB cartridge image
 make serve      # http://127.0.0.1:8795 -- run it in a browser, with your
                 # own mouse and keyboard wired into it
-make test       # boot it headless: 139 Forth assertions and 30 system checks
+make test       # boot it headless: 139 Forth assertions and 35 system checks
 make gui        # run it in mupen64plus
 ```
 
@@ -95,6 +95,20 @@ core radius (√τ) tightens and the speeds (τ^−3/4) grow while you watch. 70
 instructions a pass — **under a second**, so it animates. A Forth cousin of
 [superfx-navier-stokes](https://github.com/keithadler/superfx-navier-stokes),
 which did the same construction on a Super FX chip.
+
+**Windows** ([src/apps/wm.fth](src/apps/wm.fth)) — a window manager, written
+in Forth. The kernel draws rectangles, text and a pointer, and clips what it
+is told to clip; what a window *is*, which one is in front, and what happens
+when you drag a title bar are all up here in the language. A window is seven
+cells — position, size, title, and the word that draws its contents — and
+that word runs with the canvas and the clip set to the window's inside, so it
+cannot draw anywhere else even if it tries.
+
+![the window manager](docs/img/wm.png)
+
+Repainting everything every frame would flicker, so the chrome is drawn when
+something moves and only the contents are drawn between times, each inside
+its own window.
 
 **Life** ([src/apps/life.fth](src/apps/life.fth)) — Conway's life, 64×64 on a
 torus, two generations held in the dictionary. A generation a pass, and it
