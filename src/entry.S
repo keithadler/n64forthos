@@ -26,6 +26,15 @@ _start:
     bgtz    $t1, 2b
     addiu   $t0, $t0, 16
 
+    /* Both caches are empty now, so it is safe to run cached.  This jumps
+     * to the link-time address of the label, which is in KSEG0; the code has
+     * been running from the same instructions through KSEG1 until now. */
+    lui     $t9, %hi(cached_entry)
+    ori     $t9, $t9, %lo(cached_entry)
+    jr      $t9
+    nop
+cached_entry:
+
     /* Stack and global pointer. */
     lui     $sp, %hi(_stack_top)
     ori     $sp, $sp, %lo(_stack_top)

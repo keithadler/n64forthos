@@ -179,6 +179,10 @@ void kmain(void)
 
     ram_mb_cached = ram;
     vi_init((void *)FB_ADDR);
+    /* Light the screen before anything else can go wrong: on real hardware
+     * a black screen and a hung kernel look identical, and this way the
+     * first thing a console shows is that the kernel is running. */
+    gfx_cls(C_BG);
     install_vectors();
     con_init(C_BG);
     con_scroll_region(2, 19);

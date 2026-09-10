@@ -165,8 +165,11 @@ anyway.
 
 ## Real hardware
 
-Not yet tested on a console; two things stand between here and a flashcart,
-and both are known:
+Not yet tested on a console. [docs/HARDWARE.md](docs/HARDWARE.md) is the
+practical guide — what to put on the cart, what you should see and in what
+order, what each failure would mean, how to set up a BlueRetro adapter, and
+how to teach the system a real keyboard. In short, two things stand between
+here and a flashcart, and both are known:
 
 1. **RDRAM is not initialised.** Emulators hand it to you working. On
    hardware the boot block has to configure the RI and the RDRAM modules

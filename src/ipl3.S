@@ -30,7 +30,12 @@ ipl3:
     bgtz    $t2, 1b
     addiu   $t1, $t1, 4             /* branch delay slot */
 
-    lui     $t9, 0x8000             /* enter the kernel */
+    /* Enter the kernel through the uncached alias.  At power-on the
+     * instruction cache holds whatever it holds, and nothing has
+     * invalidated it yet; fetching the first instructions cached could fetch
+     * garbage.  The kernel switches itself to cached memory as soon as it
+     * has emptied both caches. */
+    lui     $t9, 0xA000
     ori     $t9, $t9, 0x0400
     jr      $t9
     nop
