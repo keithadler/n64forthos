@@ -37,6 +37,14 @@ void vi_wait_vblank(void)
     frame_count++;
 }
 
+/* Which line the video interface is on, right now.  vi_frames() only moves
+ * when something waits for a blank, so anything that wants to know how much
+ * of a frame it has used has to ask the hardware. */
+u32 vi_line(void)
+{
+    return VI_CURRENT >> 1;
+}
+
 u32 vi_frames(void)
 {
     return frame_count;

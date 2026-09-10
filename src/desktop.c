@@ -270,12 +270,28 @@ static void open_app(const app_t *app)
         if (running) {
             char msg[48];
             char *m = msg;
+            u32 line = vi_line();
+            int did = 0;
 
-            forth_push(row);
-            if (!forth_call(app->entry)) {
-                running = 0;
-                app_status("stopped: see the console", c_amber);
-            } else if (++row >= rows) {
+            /* As many rows as fit in this frame.  A compiled application can
+             * paint several while the video interface is still on the same
+             * field, and there is no sense idling through a vertical blank
+             * with work in hand -- but stop at the frame boundary so the
+             * controller still gets read. */
+            do {
+                forth_push(row);
+                if (!forth_call(app->entry)) {
+                    running = 0;
+                    app_status("stopped: see the console", c_amber);
+                    break;
+                }
+                row++;
+                did++;
+            } while (running && row < rows && did < 8 && vi_line() >= line);
+
+            if (!running) {
+                /* it stopped itself */
+            } else if (row >= rows) {
                 /* An app that defines NEXT is an animation: advance its
                  * state and go round again until B stops it. */
                 if (forth_call("NEXT")) {
@@ -296,7 +312,7 @@ static void open_app(const app_t *app)
                     *m = 0;
                     app_status(msg, c_cyan);
                 }
-            } else if ((row & 15) == 0) {
+            } else if ((row - did) / 16 != row / 16) {
                 m = put_str(m, "row ");
                 put_u32(m, (u32)row);
                 m += slen(m);

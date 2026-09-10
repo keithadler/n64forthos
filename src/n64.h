@@ -51,6 +51,7 @@ typedef int s32;
 void vi_init(void *framebuffer);
 void vi_wait_vblank(void);
 u32 vi_frames(void);
+u32 vi_line(void);
 
 /* input.c -- controllers */
 #define PAD_A      0x8000

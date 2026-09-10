@@ -236,6 +236,9 @@ def run_desktop(rom="build/n64forthos.z64"):
 
     hold(m, PAD_B)                              # stop the trace
     hold(m, PAD_B, frames=12)                   # close the window
+    # Closing leaves the launcher on the app that was open -- the Cornell
+    # box, second in the list -- and Life is two below it.
+    tap(m, PAD_DOWN)
     tap(m, PAD_DOWN)
     tap(m, PAD_A, gap=20)                       # Life
     m.run(m.icount + 60 * FRAME)
@@ -246,6 +249,7 @@ def run_desktop(rom="build/n64forthos.z64"):
     lines = screen.decode(m.framebuffer()[2])
     check(any("of 64" in l or "pass" in l for l in lines),
           "and generating: it reports rows, then passes")
+    check(any("life.fth" in l for l in lines), "and it is Life that is running")
     return m
 
 
