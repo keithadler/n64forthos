@@ -1,0 +1,7 @@
+build/
+web/rom.z64
+captures/*.png
+src/font.h
+src/system_fth.h
+src/tests_fth.h
+__pycache__/

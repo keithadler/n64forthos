@@ -1,0 +1,34 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>n64forthos</title>
+<style>
+  :root { color-scheme: dark; }
+  body { margin: 0; background: #0a0e1e; color: #cdd5e4;
+         font: 14px/1.5 ui-monospace, Menlo, monospace; }
+  header { padding: 14px 18px 6px; }
+  h1 { margin: 0; font-size: 16px; color: #60e0ff; font-weight: 600; }
+  p { margin: 4px 0 0; color: #6e7d9b; }
+  #box { width: min(100vw, 960px); aspect-ratio: 4 / 3; margin: 12px auto; }
+  #game { width: 100%; height: 100%; }
+  a { color: #ffbe5a; }
+</style>
+<header>
+  <h1>n64forthos</h1>
+  <p>A Forth system for the Nintendo 64 &mdash; 640&times;480, 16 bits a pixel.
+     The cartridge is 64&nbsp;MiB of plain mask ROM: no save chip, no
+     expansion pak, no coprocessor.</p>
+  <p>Emulated here by mupen64plus-next through EmulatorJS. Reload after
+     <code>make</code> to pick up a new build.</p>
+</header>
+<div id="box"><div id="game"></div></div>
+<script>
+  window.EJS_player = '#game';
+  window.EJS_core = 'n64';
+  // Cache-bust: EmulatorJS keeps ROMs in IndexedDB, and this one changes
+  // every build.
+  window.EJS_gameUrl = 'rom.z64?v=' + Date.now();
+  window.EJS_gameName = 'n64forthos';
+  window.EJS_pathtodata = 'https://cdn.emulatorjs.org/stable/data/';
+  window.EJS_startOnLoaded = true;
+</script>
+<script src="https://cdn.emulatorjs.org/stable/data/loader.js"></script>
