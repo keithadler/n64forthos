@@ -70,3 +70,17 @@ _exc_entry:
     nop
 6:  j       6b
     nop
+
+/* icache_invalidate(void *addr, int bytes) -- the code we just wrote was
+ * written through the uncached alias, so nothing is sitting dirty in the
+ * data cache; the instruction cache is what has to be told. */
+    .global icache_invalidate
+icache_invalidate:
+    blez    $a1, 2f
+    nop
+1:  cache   0x10, 0($a0)            /* hit invalidate, instruction cache */
+    addiu   $a1, $a1, -32
+    bgtz    $a1, 1b
+    addiu   $a0, $a0, 32
+2:  jr      $ra
+    nop

@@ -7,8 +7,7 @@
  * SEE decompiles what is actually in memory.
  */
 #include "n64.h"
-
-typedef s32 cell;
+#include "prims.h"
 
 /* The dictionary lives in RDRAM at a fixed address rather than in .bss, so
  * the kernel image stays small and the dictionary can grow without moving. */
@@ -37,7 +36,12 @@ static u8 *const dict_end = (u8 *)(DICT_BASE + DICT_BYTES);
 static u8 *dp;                  /* next free dictionary byte */
 static cell latest;             /* address of the newest header, 0 = none */
 static cell primitives_end;     /* nothing at or below this may be forgotten */
-static cell dstack[DSTACK_MAX];
+/* A few cells of slack either side: compiled code checks the stack every
+ * time it moves the pointer, but an operation reads its operands before the
+ * check fires, and this is what it reads instead of somebody else's data. */
+#define DGUARD 8
+static cell dstack_area[DGUARD + DSTACK_MAX + DGUARD];
+static cell *const dstack = dstack_area + DGUARD;
 static int dsp;
 static cell rstack[RSTACK_MAX];
 static int rsp;
@@ -53,32 +57,6 @@ static int aborted;
 static const char *in_p;
 static const char *in_end;
 
-enum {
-    P_DOCOL = 0, P_DOVAR, P_DOCON, P_EXIT, P_LIT, P_SLIT, P_BRANCH, P_ZBRANCH,
-    P_DO, P_LOOP, P_I, P_J, P_LEAVE,
-    P_DUP, P_QDUP, P_DROP, P_SWAP, P_OVER, P_ROT, P_NIP, P_TUCK, P_PICK,
-    P_2DUP, P_2DROP, P_2SWAP,
-    P_DEPTH, P_TOR, P_RFROM, P_RFETCH, P_ROLL,
-    P_ADD, P_SUB, P_MUL, P_DIV, P_MOD, P_NEGATE, P_ABS, P_MIN, P_MAX,
-    P_1PLUS, P_1MINUS, P_2MUL, P_2DIV,
-    P_AND, P_OR, P_XOR, P_INVERT, P_LSHIFT, P_RSHIFT,
-    P_EQ, P_NE, P_LT, P_GT, P_ULT, P_ZEQ, P_ZLT, P_ZGT,
-    P_FETCH, P_STORE, P_CFETCH, P_CSTORE, P_PLUSSTORE, P_FILL,
-    P_DOT, P_UDOT, P_HDOT, P_DOTS, P_EMIT, P_CR, P_SPACE, P_SPACES, P_TYPE,
-    P_HERE, P_ALLOT, P_COMMA, P_CCOMMA, P_CELLS, P_CELLPLUS,
-    P_COLON, P_SEMI, P_IMMEDIATE, P_VARIABLE, P_CONSTANT, P_LITERAL,
-    P_IF, P_ELSE, P_THEN, P_BEGIN, P_UNTIL, P_AGAIN, P_WHILE, P_REPEAT,
-    P_DOSTR, P_PAREN, P_BACKSLASH, P_TICK, P_EXECUTE,
-    P_DOIMM, P_LOOPIMM, P_FORGET, P_LBRACK, P_RBRACK,
-    P_WORDS, P_SEE, P_DUMP, P_DECIMAL, P_HEX, P_BASE, P_ABORT,
-    P_PAGE, P_AT, P_INK, P_RGBW, P_FRAMES, P_VSYNC, P_REPORT,
-    /* the drawing layer: what libultra would have called the graphics API */
-    P_FB, P_CLS, P_PLOT, P_BOX, P_FRAME, P_HLINE, P_VLINE, P_LINE,
-    P_DRAWTEXT, P_BLIT, P_BLITKEY, P_SQUOTE, P_SQRUN,
-    /* 16.16 fixed point, and where an app is allowed to draw */
-    P_FMUL, P_FDIV, P_FSQRT, P_CANVASX, P_CANVASY, P_CANVASW, P_CANVASH,
-    P_KEYSET, P_MOUSEX, P_MOUSEY, P_MOUSEB
-};
 
 /* ---------------------------------------------------------------- stacks */
 
@@ -757,8 +735,18 @@ void forth_execute(cell xt)
         cell code = *(cell *)(u32)xt;
 
         if (code == P_DOCOL) {
-            rpush((cell)(u32)ip);
-            ip = (cell *)(u32)(xt + 4);
+            cell native = *(cell *)(u32)(xt + 4);
+
+            if (native) {
+                cell *(*fn)(cell *) = (cell *(*)(cell *))(u32)native;
+
+                dsp = (int)(fn(&dstack[dsp]) - dstack);
+                if (aborted)
+                    return;
+            } else {
+                rpush((cell)(u32)ip);
+                ip = (cell *)(u32)(xt + 8);
+            }
         } else {
             prim((int)code, xt, &ip);
             if (aborted)
@@ -836,6 +824,7 @@ static void do_immediate_word(int code)
         if (!h)
             return;
         comma(P_DOCOL);
+        comma(0);                       /* room for the compiled code */
         def_prev_latest = prev;
         def_header = h;
         csp = 0;
@@ -852,8 +841,17 @@ static void do_immediate_word(int code)
             return;
         }
         comma(xt_of("EXIT"));
-        def_header = 0;
-        state = 0;
+        {   /* Now that the thread is whole, try to compile it. */
+            extern int native_compile(cell xt);
+            cell h = def_header;
+
+            def_header = 0;
+            state = 0;
+#ifndef NO_NATIVE
+            if (h)
+                native_compile(name_to_xt(h));
+#endif
+        }
         break;
     case P_IMMEDIATE:
         if (!latest)
@@ -1089,7 +1087,7 @@ static void do_see(void)
     con_puts(": ");
     print_name(h);
     con_putc(' ');
-    ip = (cell *)(u32)(xt + 4);
+    ip = (cell *)(u32)(xt + 8);
     for (limit = 0; limit < 512; limit++) {
         cell tok = *ip++;
         cell th = xt_to_header(tok);
@@ -1380,6 +1378,117 @@ int forth_call(const char *name)
     return !aborted;
 }
 
+/* ------------------------------------------- what compiled code calls
+ *
+ * All of these take the Forth stack pointer and hand it back, which is the
+ * calling convention src/native.c emits.
+ */
+cell *fs_prim(cell *stack, cell code)
+{
+    cell *ip = 0;
+
+    dsp = (int)(stack - dstack);
+    prim((int)code, 0, &ip);
+    return &dstack[dsp];
+}
+
+cell *fs_call(cell *stack, cell xt)
+{
+    dsp = (int)(stack - dstack);
+    forth_execute(xt);
+    return &dstack[dsp];
+}
+
+cell *fs_type(cell *stack, cell addr, cell len)
+{
+    const char *s = (const char *)(u32)addr;
+
+    while (len-- > 0)
+        con_putc(*s++);
+    return stack;
+}
+
+cell *fs_do(cell *stack)
+{
+    dsp = (int)(stack - dstack);
+    {
+        cell index = pop(), limit = pop();
+
+        rpush(limit);
+        rpush(index);
+    }
+    return &dstack[dsp];
+}
+
+cell *fs_index(cell *stack, cell level)
+{
+    dsp = (int)(stack - dstack);
+    push(rstack[rsp - 1 - (level ? 2 : 0)]);
+    return &dstack[dsp];
+}
+
+int fs_loop(void)
+{
+    cell index = rpop(), limit = rpop();
+
+    index++;
+    if (index < limit) {
+        rpush(limit);
+        rpush(index);
+        return 1;
+    }
+    return 0;
+}
+
+cell *fs_bad_stack(cell *stack)
+{
+    dsp = (int)(stack - dstack);
+    if (dsp < 0)
+        dsp = 0;
+    error("stack out of range in compiled code", 0, 0);
+    return &dstack[dsp];
+}
+
+int fs_aborted(void)
+{
+    return aborted;
+}
+
+u32 forth_abort_flag(void)
+{
+    return (u32)&aborted;
+}
+
+u32 forth_rstack_base(void)
+{
+    return (u32)rstack;
+}
+
+u32 forth_rsp_addr(void)
+{
+    return (u32)&rsp;
+}
+
+u32 forth_stack_base(void)
+{
+    return (u32)dstack;
+}
+
+u32 forth_stack_top(void)
+{
+    return (u32)&dstack[DSTACK_MAX];
+}
+
+u32 forth_limit(void)
+{
+    return (u32)dict_end;
+}
+
+void forth_set_here(u32 where)
+{
+    dp = (u8 *)where;
+}
+
 u32 forth_mark(void)
 {
     return (u32)latest;
@@ -1403,7 +1512,7 @@ void forth_release(u32 mark)
         u8 *end = (u8 *)(u32)(xt + 4);
 
         if (*(cell *)(u32)xt == P_DOCOL) {
-            cell *ip = (cell *)(u32)(xt + 4);
+            cell *ip = (cell *)(u32)(xt + 8);
             int n;
             for (n = 0; n < 4096; n++) {
                 cell tok = *ip++;

@@ -204,7 +204,8 @@ void kmain(void)
     con_printf("  DICT   %u KiB at %08x\n",
                forth_dict_size() >> 10, forth_dict_base());
     forth_eval_lines(system_fth);
-    con_printf("  FORTH  %u words, boot source compiled\n\n", word_count());
+    con_printf("  FORTH  %u words, %u compiled, %u refused\n\n",
+               word_count(), native_compiled(), native_refused());
 
 #ifdef TEST_BUILD
     (void)i;
@@ -234,6 +235,7 @@ void kmain(void)
 #define APP_DEBUG_SIZE 256
 #endif
     forth_set_canvas(408, 64, APP_DEBUG_SIZE, APP_DEBUG_SIZE);
+    gfx_cls(RGB(8, 10, 30));            /* nothing on screen but the app */
     con_puts("compiling app\n");
     forth_eval_lines(APP_DEBUG_SRC);
     con_printf("%u words\n", word_count());

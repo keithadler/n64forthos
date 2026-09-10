@@ -24,11 +24,16 @@ CFLAGS  := -target mips-unknown-elf -march=mips2 -mabi=32 -mno-abicalls \
            -fno-pic -mno-gpopt -G0 -msoft-float -mno-check-zero-division \
            -ffreestanding -fno-builtin -nostdlib -fno-stack-protector \
            -Wall -Wextra -O2 -fomit-frame-pointer
+# EXTRA ?= extra flags, e.g. make EXTRA=-DNO_NATIVE to compare against
+# the plain interpreter.
+EXTRA   ?=
+CFLAGS  += $(EXTRA)
+
 LDFLAGS := -T link.ld --no-warnings
 
 CSRC    := src/kernel.c src/video.c src/console.c src/gfx.c src/rdp.c \
            src/input.c \
-           src/repl.c src/desktop.c src/forth.c
+           src/repl.c src/desktop.c src/forth.c src/native.c
 OBJS    := build/entry.o $(patsubst src/%.c,build/%.o,$(CSRC))
 TOBJS   := build/entry-t.o $(patsubst src/%.c,build/%-t.o,$(CSRC))
 DOBJS   := build/entry-d.o $(patsubst src/%.c,build/%-d.o,$(CSRC))

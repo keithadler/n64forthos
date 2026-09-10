@@ -161,6 +161,17 @@ void forth_push(s32 v);
 s32 forth_pop(void);
 int forth_call(const char *name);
 u32 forth_mark(void);
+u32 forth_here(void);
+u32 forth_abort_flag(void);
+u32 forth_rstack_base(void);
+u32 forth_rsp_addr(void);
+u32 forth_stack_base(void);
+u32 forth_stack_top(void);
+u32 forth_limit(void);
+void forth_set_here(u32 where);
+int native_compile(s32 xt);
+u32 native_compiled(void);
+u32 native_refused(void);
 void forth_release(u32 mark);
 u32 forth_word_count(void);
 

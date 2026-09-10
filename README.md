@@ -109,6 +109,34 @@ the place to teach the system a real keyboard's key codes.
 
 ![the Navier-Stokes demo](docs/img/app-navier.png)
 
+### Forth compiled to MIPS
+
+A definition is compiled to machine code the moment it is finished, and
+[`src/native.c`](src/native.c) walks the token thread the word already has
+and writes instructions out. Nothing about the front end changes: the thread
+stays where it was, which is what `SEE` decompiles and `FORGET` reclaims, and
+a word the generator will not take is simply left interpreted. The boot log
+says how many of each.
+
+The convention is one register wide. A compiled word takes the Forth stack
+pointer in `$a0`, returns it in `$v0` and keeps it in `$t8` while it runs;
+the helpers in the kernel take and return it the same way, so a call costs
+four instructions rather than a round trip through memory. The stack's two
+limits sit in `$s1` and `$s2` and every move of the pointer is checked
+against them; `@` and `!` check their address and alignment inline. Compiled
+code is written through the uncached alias and the instruction cache is
+invalidated over it — the part an emulator would never have made you do.
+
+| | interpreted | compiled |
+| --- | --- | --- |
+| Mandelbrot | 4,278 instructions a pixel | **1,731** — 2.5× |
+| Navier–Stokes | 1,548 | **580** — 2.7× |
+| Cornell box | 18,769 | **12,913** — 1.45× |
+
+The ray tracer gains least because it spends its time inside helpers — one
+division is a call, and a call is not something compiling the caller makes
+faster.
+
 ### What optimisation actually bought
 
 Measured, not guessed — `tools/bench.py` counts instructions a pixel and
@@ -123,10 +151,14 @@ Measured, not guessed — `tools/bench.py` counts instructions a pixel and
 | `F/` rewritten to use the CPU's divider | 1.3% |
 | a fast path for hot words in the inner interpreter | **nothing** — `prim()` was already inlined; reverted |
 | `-O3` | **slower**, and bigger; reverted |
+| the RDP filling rectangles instead of the CPU | **2.4×** on the interface |
+| compiling definitions to MIPS | **2.5×** on the applications |
 
-The floor is the interpreter itself: about 36 VR4300 instructions per Forth
-word executed. Going below that means not interpreting — compiling, or
-handing the pixels to the RDP — which is another project.
+The floor used to be the interpreter itself, at about 36 instructions per
+Forth word. Both ways past it are now taken: the RDP does the fills, and
+definitions are compiled. What is left is the RSP, which is eight lanes of
+16-bit arithmetic sitting idle — and microcode is a different kind of
+project, because the applications would stop being Forth.
 
 ## Mouse and keyboard
 
