@@ -18,8 +18,11 @@ import sys
 M32 = 0xFFFFFFFF
 RDRAM_SIZE = 8 << 20
 HALFLINES = 525                  # NTSC half-lines per field pair
-CYCLES_PER_HALFLINE = 200        # instructions, not cycles: fast enough that
-                                 # a vsync spin ends, slow enough to be a spin
+# A VR4300 retires roughly 93.75M instructions a second and a field is 1/60
+# of one, so this is what a half-line costs in instructions.  The harness
+# passes something smaller when it wants tests to finish this century; the
+# only thing that changes is how long a vsync spin takes.
+CYCLES_PER_HALFLINE = 2976
 
 
 def s32(v):
@@ -32,7 +35,7 @@ class Fault(Exception):
 
 
 class N64:
-    def __init__(self, rom, ram_mb=4, trace=None):
+    def __init__(self, rom, ram_mb=4, trace=None, halfline=CYCLES_PER_HALFLINE):
         self.rom = rom
         self.ram = bytearray(RDRAM_SIZE)
         self.ram_limit = ram_mb << 20
@@ -56,6 +59,7 @@ class N64:
         self.pc = 0
         self.icount = 0
         self.trace = trace
+        self.halfline = halfline
         self.stopped = None
 
     # ------------------------------------------------------------ memory
@@ -82,7 +86,7 @@ class N64:
         if 0x04400000 <= p < 0x04400040:
             idx = (p - 0x04400000) >> 2
             if idx == 4:                            # VI_CURRENT
-                line = (self.icount // CYCLES_PER_HALFLINE) % HALFLINES
+                line = (self.icount // self.halfline) % HALFLINES
                 return line << 1
             return self.vi[idx]
         if 0x04600000 <= p < 0x04600040:
@@ -480,11 +484,11 @@ class N64:
         return w, h
 
 
-def load(path, ram_mb=4):
+def load(path, ram_mb=4, halfline=CYCLES_PER_HALFLINE):
     rom = open(path, "rb").read()
     if rom[:4] != b"\x80\x37\x12\x40":
         raise SystemExit("not a big-endian .z64 image")
-    n64 = N64(rom, ram_mb=ram_mb)
+    n64 = N64(rom, ram_mb=ram_mb, halfline=halfline)
     n64.boot()
     return n64
 

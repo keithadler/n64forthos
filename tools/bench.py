@@ -23,7 +23,7 @@ def painted(m):
 if __name__ == "__main__":
     rom = sys.argv[1] if len(sys.argv) > 1 else "build/n64forthos-dbg.z64"
     budget = int(sys.argv[2]) if len(sys.argv) > 2 else 30_000_000
-    m = n64emu.load(rom)
+    m = n64emu.load(rom, halfline=200)
     m.run(12_000_000)                       # boot and compile
     start = m.icount
     m.run(start + budget)

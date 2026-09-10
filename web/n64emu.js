@@ -13,7 +13,8 @@
  */
 
 export class N64 {
-  constructor(rom, ramMB = 8) {
+  // A stock console has 4 MiB; the Expansion Pak is not assumed.
+  constructor(rom, ramMB = 4) {
     this.rom = rom;                       // Uint8Array
     this.ramWords = new Uint32Array((8 << 20) >> 2);
     this.ramLimit = ramMB << 20;
@@ -63,7 +64,8 @@ export class N64 {
     if (p >= 0x04400000 && p < 0x04400040) {
       const idx = (p - 0x04400000) >> 2;
       if (idx === 4) {                    // VI_CURRENT, in half-lines
-        return (((this.icount / 200) | 0) % 525) << 1;
+        // 93.75M instructions a second, 60 fields a second, 525 half-lines
+        return (((this.icount / 2976) | 0) % 525) << 1;
       }
       return this.vi[idx];
     }

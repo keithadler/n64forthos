@@ -10,6 +10,7 @@
 #include "n64.h"
 #include "apps/mandel_fth.h"
 #include "apps/cornell_fth.h"
+#include "apps/navier_fth.h"
 
 #define DESK_X   8
 #define DESK_Y   32
@@ -48,9 +49,11 @@ typedef struct {
 
 static const app_t apps[] = {
     { "Mandelbrot", "escape-time fractal, 16.16 fixed point",
-      mandel_fth, "MANDEL", APP_FORTH },
+      mandel_fth, "ROW", APP_FORTH },
     { "Cornell box", "ray tracer: five walls, two spheres, a light",
-      cornell_fth, "CORNELL", APP_FORTH },
+      cornell_fth, "ROW", APP_FORTH },
+    { "Navier-Stokes", "the finite-time blowup, in similarity variables",
+      navier_fth, "ROW", APP_FORTH },
     { "Console", "the Forth prompt, keyboard or controller", 0, 0,
       APP_CONSOLE },
     { "Devices", "what is plugged in, and teaching it the keyboard", 0, 0,
@@ -94,15 +97,15 @@ static void draw_desktop(int sel)
     int i;
 
     gfx_box(0, 16, SCREEN_W, SCREEN_H - 16, c_desk);
-    gfx_box(48, 80, 544, 280, c_win);
+    gfx_box(48, 80, 544, 328, c_win);
     gfx_box(48, 80, 544, 20, c_bar);
-    gfx_frame(48, 80, 544, 280, c_edge);
+    gfx_frame(48, 80, 544, 328, c_edge);
     text_at(56, 80, "n64forthos", c_ink);
     text_at(56, 112, "A Forth system with a desktop. Pick something:", c_dim);
 
     for (i = 0; i < NAPPS; i++)
         draw_row(i, i == sel);
-    text_at(56, 336, "d-pad select or point and click     A open", c_dim);
+    text_at(56, 384, "d-pad select or point and click     A open", c_dim);
 }
 
 /* ------------------------------------------------------- an app's window */
@@ -148,19 +151,22 @@ static void draw_app_frame(const app_t *app)
     text_at(DESK_X + 8, DESK_Y, app->name, c_ink);
     text_at(DESK_X + 232, DESK_Y, "A run   B close   up/down scroll", c_ink);
     /* The same two things, for a pointer. */
-    gfx_box(RUN_X, DESK_Y + 2, 56, 16, RGB(30, 38, 74));
-    text_at(RUN_X + 12, DESK_Y + 2, "RUN", c_amber);
-    gfx_box(CLOSE_X, DESK_Y + 2, 56, 16, RGB(30, 38, 74));
-    text_at(CLOSE_X + 8, DESK_Y + 2, "CLOSE", c_text);
+    gfx_box(RUN_X, DESK_Y, 56, 18, RGB(30, 38, 74));
+    text_at(RUN_X + 16, DESK_Y, "RUN", c_amber);
+    gfx_box(CLOSE_X, DESK_Y, 56, 18, RGB(30, 38, 74));
+    text_at(CLOSE_X + 8, DESK_Y, "CLOSE", c_text);
 
     gfx_box(CAN_X, CAN_Y, CAN_W, CAN_H, RGB(8, 10, 30));
     gfx_frame(CAN_X - 2, CAN_Y - 2, CAN_W + 4, CAN_H + 4, c_edge);
 }
 
+/* Kept on the character grid, so the test harness can read it back. */
+#define STATUS_Y (CAN_Y + CAN_H + 16)
+
 static void app_status(const char *s, u16 colour)
 {
-    gfx_box(CAN_X, CAN_Y + CAN_H + 8, CAN_W, 16, c_win);
-    text_at(CAN_X, CAN_Y + CAN_H + 8, s, colour);
+    gfx_box(CAN_X, STATUS_Y, CAN_W, 16, c_win);
+    text_at(CAN_X, STATUS_Y, s, colour);
 }
 
 static char *put_str(char *p, const char *s)
@@ -188,6 +194,8 @@ static void open_app(const app_t *app)
 {
     u32 mark = forth_mark();
     int top = 0, lines = 0;
+    int running = 0, row = 0, rows = 0, passes = 0;
+    u32 started = 0;
     const char *p;
 
     for (p = app->source; *p; p++)
@@ -211,14 +219,19 @@ static void open_app(const app_t *app)
         ms = input_mouse();
         if (ms->present) {
             if (ms->edges & MOUSE_LEFT) {
-                if (hit(ms->x, ms->y, RUN_X, DESK_Y + 2, 56, 16))
+                if (hit(ms->x, ms->y, RUN_X, DESK_Y, 56, 18))
                     clicked_run = 1;
-                if (hit(ms->x, ms->y, CLOSE_X, DESK_Y + 2, 56, 16))
+                if (hit(ms->x, ms->y, CLOSE_X, DESK_Y, 56, 18))
                     pressed |= PAD_B;
             }
             gfx_cursor_show(ms->x, ms->y, RGB(255, 255, 255), RGB(0, 0, 0));
         }
 
+        if ((pressed & PAD_B) && running) {
+            running = 0;                /* stop the picture, keep the window */
+            app_status("stopped", c_dim);
+            continue;
+        }
         if (pressed & PAD_B) {
             gfx_cursor_hide();
             forth_release(mark);
@@ -234,26 +247,61 @@ static void open_app(const app_t *app)
             draw_source(app->source, top);
         }
         if ((pressed & (PAD_A | PAD_START)) || clicked_run) {
-            char msg[48];
-            u32 t0 = vi_frames(), frames;
-
+            /* Start it.  The picture is drawn a row per frame so that the
+             * controller still answers while it paints -- and so that B can
+             * stop it half way. */
             gfx_cursor_hide();
-            app_status("running...", c_amber);
-            forth_eval(app->entry);
-            frames = vi_frames() - t0;
-            {
-                char *m = msg;
-                const char *w = "drawn in ";
-                while (*w)
-                    *m++ = *w++;
-                put_u32(m, frames);
+            gfx_box(CAN_X, CAN_Y, CAN_W, CAN_H, RGB(8, 10, 30));
+            rows = forth_call("ROWS") ? forth_pop() : 0;
+            row = 0;
+            passes = 0;
+            forth_call("START");        /* optional: reset the app's state */
+            started = vi_frames();
+            running = (rows > 0);
+            if (!running)
+                app_status("this app defines no ROWS", c_amber);
+        }
+
+        if (running) {
+            char msg[48];
+            char *m = msg;
+
+            forth_push(row);
+            if (!forth_call(app->entry)) {
+                running = 0;
+                app_status("stopped: see the console", c_amber);
+            } else if (++row >= rows) {
+                /* An app that defines NEXT is an animation: advance its
+                 * state and go round again until B stops it. */
+                if (forth_call("NEXT")) {
+                    row = 0;
+                    passes++;
+                    m = put_str(m, "pass ");
+                    put_u32(m, (u32)passes);
+                    m += slen(m);
+                    m = put_str(m, "   B stops it");
+                    *m = 0;
+                    app_status(msg, c_amber);
+                } else {
+                    running = 0;
+                    m = put_str(m, "drawn in ");
+                    put_u32(m, vi_frames() - started);
+                    m += slen(m);
+                    m = put_str(m, " frames");
+                    *m = 0;
+                    app_status(msg, c_cyan);
+                }
+            } else if ((row & 15) == 0) {
+                m = put_str(m, "row ");
+                put_u32(m, (u32)row);
                 m += slen(m);
-                w = " frames";
-                while (*w)
-                    *m++ = *w++;
+                m = put_str(m, " of ");
+                put_u32(m, (u32)rows);
+                m += slen(m);
+                m = put_str(m, "   B stops it");
                 *m = 0;
+                app_status(msg, c_amber);
             }
-            app_status(msg, c_cyan);
         }
 
         kernel_status_bar();

@@ -57,6 +57,7 @@ enum {
     P_DOCOL = 0, P_DOVAR, P_DOCON, P_EXIT, P_LIT, P_SLIT, P_BRANCH, P_ZBRANCH,
     P_DO, P_LOOP, P_I, P_J, P_LEAVE,
     P_DUP, P_QDUP, P_DROP, P_SWAP, P_OVER, P_ROT, P_NIP, P_TUCK, P_PICK,
+    P_2DUP, P_2DROP, P_2SWAP,
     P_DEPTH, P_TOR, P_RFROM, P_RFETCH, P_ROLL,
     P_ADD, P_SUB, P_MUL, P_DIV, P_MOD, P_NEGATE, P_ABS, P_MIN, P_MAX,
     P_1PLUS, P_1MINUS, P_2MUL, P_2DIV,
@@ -411,10 +412,18 @@ static cell fixed_mul(cell a, cell b)
     return (cell)(((long long)a * (long long)b) >> 16);
 }
 
+/* a / b in 16.16.
+ *
+ * The obvious way -- shift the numerator up 16 places and do a 64-bit
+ * division -- costs a 32-round loop, and the ray tracer spends most of its
+ * time here: a dozen divisions a ray.  So do it as the VR4300 would: the
+ * integer part with one hardware divide, then the fraction out of the
+ * remainder with one or two more.  Exact, and several times faster.
+ */
 static cell fixed_div(cell a, cell b)
 {
     int neg = 0;
-    u32 ua, ub;
+    u32 ua, ub, whole, rem, frac;
 
     if (a < 0) { a = -a; neg ^= 1; }
     if (b < 0) { b = -b; neg ^= 1; }
@@ -422,8 +431,23 @@ static cell fixed_div(cell a, cell b)
     ub = (u32)b;
     if (!ub)
         return 0;
+
+    whole = ua / ub;
+    rem = ua % ub;
+    if (whole > 0x7FFFu)
+        return neg ? (cell)0x80000000u : (cell)0x7FFFFFFFu;   /* saturate */
+
+    if (ub <= 0x7FFFu) {
+        frac = (rem << 16) / ub;                  /* rem < ub, so this fits */
+    } else if (ub <= 0x7FFFFFu) {
+        u32 t = (rem << 8) / ub;                  /* two eight-bit steps */
+        u32 r1 = (rem << 8) % ub;
+        frac = (t << 8) | ((r1 << 8) / ub);
+    } else {
+        frac = udiv64_32(((unsigned long long)rem) << 16, ub);
+    }
     {
-        u32 q = udiv64_32(((unsigned long long)ua) << 16, ub);
+        u32 q = (whole << 16) | (frac & 0xFFFFu);
         return neg ? -(cell)q : (cell)q;
     }
 }
@@ -482,6 +506,15 @@ static void prim(int code, cell xt, cell **ipp)
     case P_LEAVE:   rpop(); rpush(0x7FFFFFFF); break;
 
     case P_DUP:     a = pop(); push(a); push(a); break;
+    case P_2DUP:    b = pop(); a = pop(); push(a); push(b); push(a); push(b);
+                    break;
+    case P_2DROP:   (void)pop(); (void)pop(); break;
+    case P_2SWAP: {
+        cell d = pop(), c2 = pop();
+        b = pop(); a = pop();
+        push(c2); push(d); push(a); push(b);
+        break;
+    }
     case P_QDUP:    a = pop(); push(a); if (a) push(a); break;
     case P_DROP:    (void)pop(); break;
     case P_SWAP:    b = pop(); a = pop(); push(b); push(a); break;
@@ -1242,6 +1275,7 @@ static const struct primdef prims[] = {
     { "DO", P_DOIMM, IMMEDIATE }, { "LOOP", P_LOOPIMM, IMMEDIATE },
     { "I", P_I, 0 }, { "J", P_J, 0 },
     { "DUP", P_DUP, 0 }, { "?DUP", P_QDUP, 0 }, { "DROP", P_DROP, 0 },
+    { "2DUP", P_2DUP, 0 }, { "2DROP", P_2DROP, 0 }, { "2SWAP", P_2SWAP, 0 },
     { "SWAP", P_SWAP, 0 }, { "OVER", P_OVER, 0 }, { "ROT", P_ROT, 0 },
     { "NIP", P_NIP, 0 }, { "TUCK", P_TUCK, 0 }, { "PICK", P_PICK, 0 },
     { "DEPTH", P_DEPTH, 0 }, { ">R", P_TOR, 0 }, { "R>", P_RFROM, 0 },
@@ -1323,6 +1357,29 @@ u32 forth_dict_base(void)
 
 /* An app compiles into the dictionary when its window opens and is rolled
  * back out of it when the window closes. */
+/* Calling into Forth from C: the desktop drives an application a row at a
+ * time, so the machine keeps reading its controller while a picture paints. */
+void forth_push(cell v)
+{
+    push(v);
+}
+
+cell forth_pop(void)
+{
+    return pop();
+}
+
+int forth_call(const char *name)
+{
+    cell xt = find(name, slen(name), 0);
+
+    if (!xt)
+        return 0;
+    aborted = 0;
+    forth_execute(xt);
+    return !aborted;
+}
+
 u32 forth_mark(void)
 {
     return (u32)latest;

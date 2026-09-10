@@ -29,7 +29,7 @@ def check(ok, what):
 
 def run_tests(rom="build/n64forthos-test.z64"):
     print(f"{rom}")
-    m = n64emu.load(rom)
+    m = n64emu.load(rom, halfline=FAST_VI)
     passes = fails = None
     for _ in range(120):
         m.run(m.icount + 500_000)
@@ -54,7 +54,8 @@ def run_tests(rom="build/n64forthos-test.z64"):
 
 
 # --------------------------------------------------------------- the keyboard
-FRAME = 105_000            # instructions per frame in tools/n64emu.py
+FAST_VI = 200              # a sped-up video clock, for the harness only
+FRAME = FAST_VI * 525      # instructions in one of its frames
 PAD_A, PAD_B, PAD_Z, PAD_START = 0x8000, 0x4000, 0x2000, 0x1000
 PAD_UP, PAD_DOWN, PAD_LEFT, PAD_RIGHT = 0x0800, 0x0400, 0x0200, 0x0100
 
@@ -121,6 +122,13 @@ def type_keys(m, text, frames=3):
         m.run(m.icount + frames * FRAME)
 
 
+def hold(m, mask, frames=40):
+    """A press long enough to survive a row of rendering: one row of Forth
+    is a couple of million instructions, and the kernel only reads the
+    controller between rows."""
+    tap(m, mask, hold=frames, gap=12)
+
+
 def open_from_desktop(m, index):
     for _ in range(index):
         tap(m, PAD_DOWN)
@@ -131,14 +139,14 @@ def open_from_desktop(m, index):
 def run_repl(rom="build/n64forthos.z64"):
     """The prompt, typed at twice: with a keyboard and with a controller."""
     print(f"{rom}  (the prompt)")
-    m = n64emu.load(rom)
+    m = n64emu.load(rom, halfline=FAST_VI)
     m.run(16_000_000)
     check(m.pads[1] is not None and m.pads[1]["kind"] == "mouse",
           "a mouse is on channel 2")
     check(m.pads[2] is not None and m.pads[2]["kind"] == "keyboard",
           "a keyboard is on channel 3")
 
-    open_from_desktop(m, 2)                     # the Console
+    open_from_desktop(m, 3)                     # the Console
     lines = screen.decode(m.framebuffer()[2])
     check(any("d-pad or mouse" in l for l in lines), "the console is up")
 
@@ -169,7 +177,7 @@ def canvas_colours(px, x0=368, y0=64, w=256, h=256):
 def run_desktop(rom="build/n64forthos.z64"):
     """Open both applications from the desktop and start them rendering."""
     print(f"{rom}  (the desktop and its apps)")
-    m = n64emu.load(rom)
+    m = n64emu.load(rom, halfline=FAST_VI)
     m.run(16_000_000)
     lines = screen.decode(m.framebuffer()[2])
     text = "\n".join(lines)
@@ -177,6 +185,7 @@ def run_desktop(rom="build/n64forthos.z64"):
     check("Cornell box" in text, "the desktop lists the Cornell box")
     check("Console" in text, "the desktop lists the console")
 
+    check("Navier-Stokes" in text, "the desktop lists the Navier-Stokes demo")
     check("Devices" in text, "the desktop lists the devices window")
 
     # A pointer: put it over the first row and click.
@@ -190,25 +199,33 @@ def run_desktop(rom="build/n64forthos.z64"):
     text = "\n".join(lines)
     check("mandel.fth" in text, "the app window shows its Forth source")
     check("CONSTANT DEPTH" in text, "the source is the code that will run")
-    check("A run" in text and "B close" in text, "the window says how to use it")
+    check("RUN" in text and "CLOSE" in text,
+          "the window offers RUN and CLOSE to a pointer")
 
     tap(m, PAD_A, gap=1)                        # run it
     m.run(m.icount + 60_000_000)
     seen = canvas_colours(m.framebuffer()[2])
     check(len(seen) >= 8, f"Mandelbrot painted the canvas ({len(seen)} colours)")
+    lines = screen.decode(m.framebuffer()[2])
+    check(any("row" in l and "of 128" in l for l in lines),
+          "it reports progress while it paints")
     m.save_png("captures/app-mandel.png")
 
-    tap(m, PAD_B, gap=8)                        # close, back to the desktop
+    hold(m, PAD_B)                              # stop the picture
+    lines = screen.decode(m.framebuffer()[2])
+    check(any("stopped" in l for l in lines),
+          "B stops a render without closing the window")
+    hold(m, PAD_B, frames=12)                   # close, back to the desktop
     tap(m, PAD_DOWN)
     tap(m, PAD_A, gap=20)                       # open the Cornell box
-    m.run(m.icount + 60 * FRAME)
+    m.run(m.icount + 80 * FRAME)
     lines = screen.decode(m.framebuffer()[2])
     text = "\n".join(lines)
     check("cornell.fth" in text, "the ray tracer shows its source too")
     check("VARIABLE RX" in text, "including the ray it traces")
 
     tap(m, PAD_A, gap=1)                        # trace it
-    m.run(m.icount + 90_000_000)
+    m.run(m.icount + 120_000_000)
     seen = canvas_colours(m.framebuffer()[2])
     reds = sum(n for (r, g, b), n in seen.items() if r > 90 and g < 90)
     greens = sum(n for (r, g, b), n in seen.items() if g > 90 and r < 90)
@@ -221,15 +238,17 @@ def run_desktop(rom="build/n64forthos.z64"):
 def run_boot(rom="build/n64forthos.z64"):
     """The console as it is at boot, before the desktop paints over it."""
     print(f"{rom}  (boot)")
-    m = n64emu.load(rom)
-    snapshot = []
+    m = n64emu.load(rom, halfline=FAST_VI)
+    first, snapshot = [], []
     for _ in range(30):                     # catch it mid-handover
         m.run(m.icount + 500_000)
         lines = screen.decode(m.framebuffer()[2])
         if any("Hello, World!" in l for l in lines):
             snapshot = lines
+            first = first or lines
         elif snapshot:
             break                           # the desktop has taken the screen
+    m.run(m.icount + 4_000_000)             # let the desktop settle
     check(m.vi[0] & 3 == 2, "VI is in 16-bit mode")
     check(m.vi[0] & 0x40 != 0, "VI is interlaced")
     check(m.vi[2] == 640, f"VI width is 640 (got {m.vi[2]})")
@@ -242,7 +261,8 @@ def run_boot(rom="build/n64forthos.z64"):
     text = "\n".join(lines)
     check("n64forthos" in screen.decode(px)[0], "status bar names the system")
     check("Hello, World!" in text, "the console says Hello, World!")
-    check("640x480 16bpp interlaced" in text, "boot log reports the video mode")
+    check("640x480 16bpp interlaced" in "\n".join(first),
+          "boot log reports the video mode")
     check('": HELLO ." Hello, World!" CR ;"'.strip('"') in text,
           "SEE decompiled HELLO")
     check(text.count("?") - text.count("?DUP") == 0, "no errors on the screen")

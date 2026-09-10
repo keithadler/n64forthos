@@ -10,7 +10,8 @@ sys.path.insert(0, __file__.rsplit("/", 1)[0])
 import n64emu                                    # noqa: E402
 import screen                                    # noqa: E402
 
-FRAME = 105_000
+FAST_VI = 200              # a sped-up video clock, for the harness only
+FRAME = FAST_VI * 525
 PAD_A, PAD_B, PAD_DOWN, PAD_UP = 0x8000, 0x4000, 0x0400, 0x0800
 
 

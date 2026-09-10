@@ -32,14 +32,22 @@ VARIABLE IT
    ROT 3 * 90 + 255 MIN                 ( r g b )
    RGB ;
 
-: MANDEL
-   CANVAS-X CANVAS-Y CANVAS-W CANVAS-H  8 10 30 RGB  BOX
-   CANVAS-H 0 DO
-      -81920 I STEP * + MY !            \ -1.25 down the rows
-      CANVAS-W 0 DO
-         -131072 I STEP * + MX !        \ -2.0 across the columns
-         ESCAPE SHADE
-         CANVAS-X I +  CANVAS-Y J +  ROT
-         PLOT
-      LOOP
-   LOOP ;
+\ One sample per 2x2 block, and one row of blocks per call: the
+\ desktop asks for row n once a frame, so the machine keeps
+\ reading its controller while the picture paints.
+CANVAS-W 2/ CONSTANT RW
+CANVAS-H 2/ CONSTANT RH
+RH CONSTANT ROWS
+
+: ROW ( n -- )
+   DUP -81920 SWAP STEP 2* * + MY !     \ -1.25 down the rows
+   2* CANVAS-Y +                        \ y
+   RW 0 DO
+      -131072 I STEP 2* * + MX !        \ -2.0 across the columns
+      ESCAPE SHADE                      \ y colour
+      OVER
+      CANVAS-X I 2* +  SWAP             \ y c x y
+      2 2  4 ROLL                       \ y x y w h c
+      BOX
+   LOOP
+   DROP ;

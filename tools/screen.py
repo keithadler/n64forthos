@@ -15,17 +15,21 @@ FIRST = 0x20
 
 
 def load_font(path=FONT_H):
+    """Two tables: the glyphs as drawn, and the glyphs with their top row
+    ignored.  A window frame or an underline can run through the first pixel
+    row of a cell without the character being any less legible."""
     rows = re.findall(r"\{((?:0x[0-9a-f]{2},){15}0x[0-9a-f]{2})\}", open(path).read())
-    glyphs = {}
+    glyphs, trimmed = {}, {}
     for i, row in enumerate(rows):
         bits = tuple(int(b, 16) for b in row.split(","))
         glyphs.setdefault(bits, chr(FIRST + i))
-    return glyphs
+        trimmed.setdefault(bits[1:], chr(FIRST + i))
+    return glyphs, trimmed
 
 
-def decode(px, glyphs=None):
+def decode(px, font=None):
     """px is a list of rows of (r, g, b).  Returns a list of text lines."""
-    glyphs = glyphs or load_font()
+    glyphs, trimmed = font or load_font()
     h, w = len(px), len(px[0])
     out = []
     for row in range(h // CELL_H):
@@ -46,7 +50,9 @@ def decode(px, glyphs=None):
                     if cell[y * CELL_W + x] != bg:
                         b |= 0x80 >> x
                 bits.append(b)
-            line.append(glyphs.get(tuple(bits), "�"))
+            key = tuple(bits)
+            line.append(glyphs.get(key)
+                        or trimmed.get(key[1:], "�"))
         out.append("".join(line).rstrip())
     return out
 

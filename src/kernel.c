@@ -7,6 +7,7 @@
 #ifdef APP_DEBUG
 #include "apps/mandel_fth.h"
 #include "apps/cornell_fth.h"
+#include "apps/navier_fth.h"
 #endif
 
 #define FB_PHYS   0x00200000u                   /* 2 MiB into RDRAM */
@@ -231,7 +232,18 @@ void kmain(void)
     forth_eval_lines(APP_DEBUG_SRC);
     con_printf("%u words\n", word_count());
     con_puts("running\n");
-    forth_eval(APP_DEBUG_RUN);
+    {   /* drive it the way the desktop does: a row at a time */
+        int rows = forth_call("ROWS") ? forth_pop() : 0;
+        int row;
+
+        forth_call("START");
+        for (row = 0; row < rows; row++) {
+            forth_push(row);
+            if (!forth_call(APP_DEBUG_RUN))
+                break;
+        }
+        con_printf("%u rows\n", (u32)rows);
+    }
     con_puts("done\n");
     for (;;)
         vi_wait_vblank();

@@ -35,7 +35,8 @@ APP     ?= mandel_fth
 APPRUN  ?= MANDEL
 APPSIZE ?= 256
 GEN     := src/font.h src/system_fth.h src/tests_fth.h \
-           src/apps/mandel_fth.h src/apps/cornell_fth.h
+           src/apps/mandel_fth.h src/apps/cornell_fth.h \
+           src/apps/navier_fth.h
 
 all: $(ROM)
 

@@ -30,6 +30,9 @@ make gui        # run it in mupen64plus
 
 ## What it is
 
+Everything below runs on a **stock console**: 4 MiB of RDRAM with no
+Expansion Pak, and a 64 MiB cartridge that is nothing but mask ROM.
+
 **A cartridge that boots the way cartridges boot.** The PIF copies the first
 0x1000 bytes into RSP data memory and jumps to 0xA4000040; that code —
 [`src/ipl3.S`](src/ipl3.S), 72 bytes of it — puts the kernel in RDRAM and
@@ -39,7 +42,7 @@ Exception vectors are installed, so a bad address in Forth paints a halt
 screen with Cause, EPC and BadVAddr rather than wandering off.
 
 **A Forth, not a Forth-flavoured interpreter.** Token threaded, dictionary in
-RDRAM, 130 primitives, `:` compiles, `SEE` decompiles what is actually in
+RDRAM, 133 primitives, `:` compiles, `SEE` decompiles what is actually in
 memory, `FORGET` rolls the dictionary back, and Forth addresses *are* machine
 addresses — `@` and `!` reach the hardware.
 
@@ -72,19 +75,52 @@ rectangle the desktop lends an application. The whole set is in
 
 ## The applications
 
-**Mandelbrot** ([src/apps/mandel.fth](src/apps/mandel.fth), 45 lines) —
-escape-time, 32 iterations, 16.16 fixed point, 256×256. About 7,100
-instructions a pixel, so a full canvas is roughly five seconds of VR4300.
+Each one is asked for **one row per frame**, so the machine keeps reading its
+controller while a picture paints, the window reports its progress, and B
+stops a render half way without closing it.
+
+**Mandelbrot** ([src/apps/mandel.fth](src/apps/mandel.fth)) — escape-time, 32
+iterations, 16.16 fixed point, one sample per 2×2 block. A full canvas is
+460M instructions: **4.9 seconds** of VR4300.
 
 **Cornell box** ([src/apps/cornell.fth](src/apps/cornell.fth), 135 lines) — a
-ray tracer: five walls, two spheres, one light and a shadow ray, at one ray
-per 2×2 block. Plane and sphere intersections, normals, Lambert shading and
-shadow rays, all in fixed point, all in Forth.
+ray tracer: five walls, two spheres, one light and a shadow ray. Plane and
+sphere intersections, normals, Lambert shading and shadow rays, all in fixed
+point, all in Forth. About seven seconds a frame.
+
+**Navier–Stokes** ([src/apps/navier.fth](src/apps/navier.fth)) — the
+finite-time blowup, in the paper's own similarity variables: a slice through
+the vortex with the speed as colour. Each pass drops τ by a fifth, so the
+core radius (√τ) tightens and the speeds (τ^−3/4) grow while you watch. 70M
+instructions a pass — **under a second**, so it animates. A Forth cousin of
+[superfx-navier-stokes](https://github.com/keithadler/superfx-navier-stokes),
+which did the same construction on a Super FX chip.
 
 **Console** — the prompt, on the on-screen keyboard or a real one.
 
 **Devices** — what answered on each of the four joybus channels, live, and
 the place to teach the system a real keyboard's key codes.
+
+![the Navier-Stokes demo](docs/img/app-navier.png)
+
+### What optimisation actually bought
+
+Measured, not guessed — `tools/bench.py` counts instructions a pixel and
+`tools/profile.py` samples the program counter:
+
+| change | effect |
+| --- | --- |
+| one ray per 2×2 block, in both renderers | **4× faster** |
+| a row per frame instead of a whole frame | the UI stays alive |
+| `-Os` to `-O2` | **1.4× faster** |
+| `2DUP`/`2DROP` as primitives rather than Forth | 1% |
+| `F/` rewritten to use the CPU's divider | 1.3% |
+| a fast path for hot words in the inner interpreter | **nothing** — `prim()` was already inlined; reverted |
+| `-O3` | **slower**, and bigger; reverted |
+
+The floor is the interpreter itself: about 36 VR4300 instructions per Forth
+word executed. Going below that means not interpreting — compiling, or
+handing the pixels to the RDP — which is another project.
 
 ## Mouse and keyboard
 
@@ -156,7 +192,9 @@ each followed by assertions that the system still computes and still has an
 empty stack.
 
 **The real cartridge** is driven like a person would drive it: press A, move
-the pointer, click, type. Its console is checked by *decoding the framebuffer
+the pointer, click, type. Thirty-odd checks cover the boot console, the
+prompt with both keyboards, and both renderers -- including that the Cornell
+box comes out red on the left and green on the right. Its console is checked by *decoding the framebuffer
 back to text* — the kernel draws exact 8×16 glyphs, so
 [`tools/screen.py`](tools/screen.py) matches each cell against the same font
 and turns the screen into eighty columns of characters. "The console says

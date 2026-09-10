@@ -130,16 +130,20 @@ CANVAS-H 2/ CONSTANT RH
    RAY  1966080 TT !  SCENE            \ 30.0 is far enough away
    SHADE ;
 
-: CORNELL
-   CANVAS-X CANVAS-Y CANVAS-W CANVAS-H  8 10 30 RGB  BOX
-   RH 0 DO
-      RW 0 DO
-         I J PIXEL                     ( colour )
-         CANVAS-X I 2* +               ( c x )
-         CANVAS-Y J 2* +               ( c x y )
-         2 2                           ( c x y w h )
-         4 ROLL                        ( x y w h c )
-         BOX
-      LOOP
-   LOOP ;
+\ One row of 2x2 blocks per call: the desktop asks for row n once a
+\ frame, so the controller still answers while this paints.
+RH CONSTANT ROWS
+
+: ROW ( n -- )
+   DUP CANVAS-Y SWAP 2* +               ( n y )
+   SWAP                                 ( y n )
+   RW 0 DO
+      DUP I SWAP PIXEL                  ( y n colour )
+      CANVAS-X I 2* +                   ( y n c x )
+      3 PICK                            ( y n c x y )
+      2 2                               ( y n c x y w h )
+      4 ROLL                            ( y n x y w h c )
+      BOX
+   LOOP
+   2DROP ;
 
