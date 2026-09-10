@@ -3,32 +3,149 @@
 <title>n64forthos</title>
 <style>
   :root { color-scheme: dark; }
-  body { margin: 0; background: #0a0e1e; color: #cdd5e4;
-         font: 14px/1.5 ui-monospace, Menlo, monospace; }
-  header { padding: 14px 18px 6px; }
-  h1 { margin: 0; font-size: 16px; color: #60e0ff; font-weight: 600; }
-  p { margin: 4px 0 0; color: #6e7d9b; }
-  #box { width: min(100vw, 960px); aspect-ratio: 4 / 3; margin: 12px auto; }
-  #game { width: 100%; height: 100%; }
+  body { margin: 0; background: #070a16; color: #cdd5e4;
+         font: 13px/1.6 ui-monospace, Menlo, monospace; }
+  header { padding: 12px 16px 4px; }
+  h1 { margin: 0; font-size: 15px; color: #60e0ff; font-weight: 600; }
+  p { margin: 4px 0 0; color: #6e7d9b; max-width: 78ch; }
+  #wrap { display: flex; justify-content: center; padding: 10px; }
+  canvas { width: min(100%, 960px); aspect-ratio: 4 / 3; background: #000;
+           image-rendering: pixelated; border: 1px solid #223; cursor: none; }
+  #bar { padding: 0 16px 14px; color: #6e7d9b; display: flex; gap: 18px; }
+  b { color: #ffbe5a; font-weight: 600; }
   a { color: #ffbe5a; }
 </style>
 <header>
   <h1>n64forthos</h1>
-  <p>A Forth system for the Nintendo 64 &mdash; 640&times;480, 16 bits a pixel.
-     The cartridge is 64&nbsp;MiB of plain mask ROM: no save chip, no
-     expansion pak, no coprocessor.</p>
-  <p>Emulated here by mupen64plus-next through EmulatorJS. Reload after
-     <code>make</code> to pick up a new build.</p>
+  <p>A Forth operating system for the Nintendo 64, running here in an
+     emulator written for this repository &mdash; which is why the page can
+     hand it a <b>real mouse and keyboard</b>: they arrive as an N64 Mouse and
+     a Randnet Keyboard on joybus channels 2 and 3, the same way a BlueRetro
+     adapter presents them to the real console.</p>
+  <p><b>Click the picture</b> to give it the mouse (Esc takes it back).
+     Type at the Forth prompt with your own keyboard. Arrow keys, Z, X and
+     Enter are the controller if you would rather use one.</p>
 </header>
-<div id="box"><div id="game"></div></div>
-<script>
-  window.EJS_player = '#game';
-  window.EJS_core = 'n64';
-  // Cache-bust: EmulatorJS keeps ROMs in IndexedDB, and this one changes
-  // every build.
-  window.EJS_gameUrl = 'rom.z64?v=' + Date.now();
-  window.EJS_gameName = 'n64forthos';
-  window.EJS_pathtodata = 'https://cdn.emulatorjs.org/stable/data/';
-  window.EJS_startOnLoaded = true;
+<div id="wrap"><canvas id="screen" width="640" height="480"></canvas></div>
+<div id="bar">
+  <span id="status">loading the cartridge…</span>
+  <span id="speed"></span>
+</div>
+<script type="module">
+import { N64 } from './n64emu.js';
+
+const canvas = document.getElementById('screen');
+const ctx = canvas.getContext('2d', { alpha: false });
+const image = ctx.createImageData(640, 480);
+const status = document.getElementById('status');
+const speed = document.getElementById('speed');
+
+const PAD = { A: 0x8000, B: 0x4000, Z: 0x2000, START: 0x1000,
+              UP: 0x0800, DOWN: 0x0400, LEFT: 0x0200, RIGHT: 0x0100,
+              L: 0x0020, R: 0x0010 };
+const padKeys = {
+  ArrowUp: PAD.UP, ArrowDown: PAD.DOWN, ArrowLeft: PAD.LEFT,
+  ArrowRight: PAD.RIGHT, KeyZ: PAD.A, KeyX: PAD.B, Enter: PAD.START,
+  ShiftLeft: PAD.Z, Tab: PAD.L,
+};
+
+const rom = new Uint8Array(await (await fetch('rom.z64')).arrayBuffer());
+const emu = new N64(rom);
+window.emu = emu;              // handy from the console, and for tests
+emu.boot();
+status.textContent = `${(rom.length / 1048576).toFixed(0)} MiB cartridge, booted`;
+
+/* --- the keyboard ------------------------------------------------------
+ *
+ * A keypress in a browser can begin and end inside a single emulated frame,
+ * and the operating system only reads its devices once a frame, so presses
+ * are queued and each one is held down for a few frames with a gap after it.
+ * That is also what makes type-ahead work: type faster than it reads and
+ * nothing is lost.
+ */
+const typed = [];                 // characters waiting to be delivered
+window.typed = typed;
+window.keyEvents = 0;
+const held = new Map();           // controller button -> frames still down
+let key = 0, keyFrames = 0;
+
+function asciiOf(e) {
+  if (e.key === 'Enter') return 13;
+  if (e.key === 'Backspace') return 8;
+  if (e.key.length === 1) return e.key.toUpperCase().charCodeAt(0);
+  return 0;
+}
+addEventListener('keydown', (e) => {
+  window.keyEvents++;
+  if (padKeys[e.code] !== undefined) held.set(padKeys[e.code], 4);
+  const code = asciiOf(e);
+  if (code) typed.push(code);
+  if (e.code === 'Tab' || e.code === 'Space' || e.code.startsWith('Arrow')) e.preventDefault();
+});
+addEventListener('keyup', (e) => {
+  if (padKeys[e.code] !== undefined && !held.get(padKeys[e.code])) {
+    emu.pad.buttons &= ~padKeys[e.code];
+  }
+});
+
+function feedInput() {
+  for (const [mask, frames] of held) {
+    emu.pad.buttons |= mask;
+    if (frames <= 1) { held.delete(mask); emu.pad.buttons &= ~mask; }
+    else held.set(mask, frames - 1);
+  }
+  if (keyFrames > 0) {
+    keyFrames--;
+    if (keyFrames === 2) key = 0;             // a gap, so repeats are seen
+  } else if (typed.length) {
+    key = typed.shift();
+    keyFrames = 5;
+  }
+  emu.keys = key ? [key] : [];
+}
+
+/* --- the mouse: relative movement, through pointer lock --------------- */
+canvas.addEventListener('click', () => canvas.requestPointerLock());
+addEventListener('mousemove', (e) => {
+  if (document.pointerLockElement !== canvas) return;
+  emu.mouse.dx = Math.max(-127, Math.min(127, emu.mouse.dx + e.movementX));
+  emu.mouse.dy = Math.max(-127, Math.min(127, emu.mouse.dy - e.movementY));
+});
+addEventListener('mousedown', (e) => {
+  if (document.pointerLockElement !== canvas) return;
+  emu.mouse.buttons |= e.button === 2 ? PAD.B : PAD.A;
+  e.preventDefault();
+});
+addEventListener('mouseup', (e) => {
+  emu.mouse.buttons &= ~(e.button === 2 ? PAD.B : PAD.A);
+});
+addEventListener('contextmenu', (e) => {
+  if (document.pointerLockElement === canvas) e.preventDefault();
+});
+
+/* --- run it ----------------------------------------------------------- */
+const PER_FRAME = 1_562_500;              // 93.75 MHz / 60
+let last = performance.now(), acc = 0, frames = 0;
+
+function tick(now) {
+  requestAnimationFrame(tick);
+  try {
+    feedInput();
+    emu.run(PER_FRAME);
+  } catch (err) {
+    status.textContent = `stopped: ${err.message}`;
+    return;
+  }
+  if (emu.paint(image)) ctx.putImageData(image, 0, 0);
+  frames++;
+  acc += now - last;
+  last = now;
+  if (acc > 1000) {
+    speed.textContent =
+      `${(frames * PER_FRAME / acc / 1000).toFixed(0)}M instructions/s` +
+      `  ·  ${(frames * 1000 / acc).toFixed(0)} fps`;
+    acc = 0; frames = 0;
+  }
+}
+requestAnimationFrame(tick);
 </script>
-<script src="https://cdn.emulatorjs.org/stable/data/loader.js"></script>

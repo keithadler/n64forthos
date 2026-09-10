@@ -73,7 +73,10 @@ enum {
     P_PAGE, P_AT, P_INK, P_RGBW, P_FRAMES, P_VSYNC, P_REPORT,
     /* the drawing layer: what libultra would have called the graphics API */
     P_FB, P_CLS, P_PLOT, P_BOX, P_FRAME, P_HLINE, P_VLINE, P_LINE,
-    P_DRAWTEXT, P_BLIT, P_BLITKEY, P_SQUOTE, P_SQRUN
+    P_DRAWTEXT, P_BLIT, P_BLITKEY, P_SQUOTE, P_SQRUN,
+    /* 16.16 fixed point, and where an app is allowed to draw */
+    P_FMUL, P_FDIV, P_FSQRT, P_CANVASX, P_CANVASY, P_CANVASW, P_CANVASH,
+    P_KEYSET, P_MOUSEX, P_MOUSEY, P_MOUSEB
 };
 
 /* ---------------------------------------------------------------- stacks */
@@ -361,6 +364,81 @@ extern u16 *fb_uncached(void);
 
 static void compile_string(int prim);
 
+/* ------------------------------------------------------ 16.16 fixed point
+ *
+ * The VR4300 multiplies 32x32 into 64 for free, but dividing a 64-bit value
+ * needs a helper the freestanding build has no library for, so here is one:
+ * restoring division, thirty-two rounds, quotient assumed to fit.
+ */
+static u32 udiv64_32(unsigned long long n, u32 d)
+{
+    unsigned long long rem = n >> 32;
+    u32 q = 0;
+    int i;
+
+    if (!d || rem >= d)
+        return 0x7FFFFFFFu;                 /* saturate rather than lie */
+    for (i = 31; i >= 0; i--) {
+        rem = (rem << 1) | ((n >> i) & 1);
+        if (rem >= d) {
+            rem -= d;
+            q |= 1u << i;
+        }
+    }
+    return q;
+}
+
+static u32 usqrt64(unsigned long long v)
+{
+    unsigned long long rem = 0, root = 0;
+    int i;
+
+    for (i = 0; i < 32; i++) {
+        root <<= 1;
+        rem = (rem << 2) | ((v >> 62) & 3);
+        v <<= 2;
+        if (root < rem) {
+            root++;
+            rem -= root;
+            root++;
+        }
+    }
+    return (u32)(root >> 1);
+}
+
+static cell fixed_mul(cell a, cell b)
+{
+    return (cell)(((long long)a * (long long)b) >> 16);
+}
+
+static cell fixed_div(cell a, cell b)
+{
+    int neg = 0;
+    u32 ua, ub;
+
+    if (a < 0) { a = -a; neg ^= 1; }
+    if (b < 0) { b = -b; neg ^= 1; }
+    ua = (u32)a;
+    ub = (u32)b;
+    if (!ub)
+        return 0;
+    {
+        u32 q = udiv64_32(((unsigned long long)ua) << 16, ub);
+        return neg ? -(cell)q : (cell)q;
+    }
+}
+
+/* Where the desktop lets the running app draw. */
+static cell canvas[4] = { 0, 0, SCREEN_W, SCREEN_H };
+
+void forth_set_canvas(int x, int y, int w, int h)
+{
+    canvas[0] = x;
+    canvas[1] = y;
+    canvas[2] = w;
+    canvas[3] = h;
+}
+
 static void prim(int code, cell xt, cell **ipp)
 {
     cell a, b, c;
@@ -593,6 +671,22 @@ static void prim(int code, cell xt, cell **ipp)
                  code == P_BLITKEY);
         break;
     }
+    case P_FMUL:    b = pop(); a = pop(); push(fixed_mul(a, b)); break;
+    case P_FDIV:    b = pop(); a = pop();
+                    if (!b) error("divide by zero", 0, 0);
+                    else push(fixed_div(a, b)); break;
+    case P_FSQRT:   a = pop();
+                    if (a < 0) a = 0;
+                    push((cell)usqrt64(((unsigned long long)(u32)a) << 16));
+                    break;
+    case P_KEYSET:  b = pop(); a = pop(); input_key_map((int)a, (int)b); break;
+    case P_MOUSEX:  push(input_mouse()->x); break;
+    case P_MOUSEY:  push(input_mouse()->y); break;
+    case P_MOUSEB:  push(input_mouse()->buttons); break;
+    case P_CANVASX: push(canvas[0]); break;
+    case P_CANVASY: push(canvas[1]); break;
+    case P_CANVASW: push(canvas[2]); break;
+    case P_CANVASH: push(canvas[3]); break;
     case P_SQRUN: {
         /* runtime of S": ( -- addr len ) */
         cell len = *(*ipp)++;
@@ -1194,6 +1288,11 @@ static const struct primdef prims[] = {
     { "DRAW-TEXT", P_DRAWTEXT, 0 },
     { "BLIT", P_BLIT, 0 }, { "BLIT-SPRITE", P_BLITKEY, 0 },
     { "(S\")", P_SQRUN, 0 }, { "S\"", P_SQUOTE, IMMEDIATE },
+    { "F*", P_FMUL, 0 }, { "F/", P_FDIV, 0 }, { "FSQRT", P_FSQRT, 0 },
+    { "CANVAS-X", P_CANVASX, 0 }, { "CANVAS-Y", P_CANVASY, 0 },
+    { "CANVAS-W", P_CANVASW, 0 }, { "CANVAS-H", P_CANVASH, 0 },
+    { "KEY!", P_KEYSET, 0 }, { "MOUSE-X", P_MOUSEX, 0 },
+    { "MOUSE-Y", P_MOUSEY, 0 }, { "MOUSE-B", P_MOUSEB, 0 },
 };
 
 void forth_init(void)
@@ -1220,6 +1319,56 @@ u32 forth_here(void)
 u32 forth_dict_base(void)
 {
     return (u32)dict;
+}
+
+/* An app compiles into the dictionary when its window opens and is rolled
+ * back out of it when the window closes. */
+u32 forth_mark(void)
+{
+    return (u32)latest;
+}
+
+void forth_release(u32 mark)
+{
+    cell h = latest;
+
+    if (!mark)
+        return;
+    while (h && h != (cell)mark)
+        h = *(cell *)(u32)h;
+    if (h != (cell)mark)
+        return;                             /* not ours to roll back */
+    latest = (cell)mark;
+    dp = align_up((u8 *)(u32)mark + 4);
+    {   /* dp back to just past this word's own definition */
+        u8 len = *(u8 *)(u32)(mark + 5);
+        cell xt = (cell)(u32)align_up((u8 *)(u32)(mark + 6 + len));
+        u8 *end = (u8 *)(u32)(xt + 4);
+
+        if (*(cell *)(u32)xt == P_DOCOL) {
+            cell *ip = (cell *)(u32)(xt + 4);
+            int n;
+            for (n = 0; n < 4096; n++) {
+                cell tok = *ip++;
+                if (*(cell *)(u32)tok == P_EXIT)
+                    break;
+                if (*(cell *)(u32)tok == P_LIT ||
+                    *(cell *)(u32)tok == P_BRANCH ||
+                    *(cell *)(u32)tok == P_ZBRANCH)
+                    ip++;
+                else if (*(cell *)(u32)tok == P_SLIT ||
+                         *(cell *)(u32)tok == P_SQRUN) {
+                    cell slen = *ip++;
+                    ip += (slen + 3) / 4;
+                }
+            }
+            end = (u8 *)ip;
+        } else if (*(cell *)(u32)xt == P_DOVAR ||
+                   *(cell *)(u32)xt == P_DOCON) {
+            end = (u8 *)(u32)(xt + 8);
+        }
+        dp = align_up(end);
+    }
 }
 
 u32 forth_dict_size(void)

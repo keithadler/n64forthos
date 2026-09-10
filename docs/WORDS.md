@@ -91,6 +91,37 @@ Strings for `DRAW-TEXT` come from `S"`:
 S" Hello, World!" 336 256 WHITE DRAW-TEXT
 ```
 
+## Fixed point
+
+A cell holds a 16.16 fixed-point number in the applications: 65536 is 1.0.
+
+| word | stack | what it does |
+| --- | --- | --- |
+| `F*` | `( a b -- ab )` | multiply, through a 64-bit intermediate |
+| `F/` | `( a b -- a/b )` | divide, likewise |
+| `FSQRT` | `( a -- root )` | square root |
+
+The VR4300 multiplies 32x32 into 64 for nothing, but there is no library
+under this kernel to divide a 64-bit value, so `F/` and `FSQRT` are written
+out longhand in `src/forth.c`.
+
+## The canvas
+
+An application does not own the screen; the desktop lends it a rectangle.
+
+```
+CANVAS-X  CANVAS-Y  CANVAS-W  CANVAS-H
+```
+
+They are constants for as long as your window is open, which is why an app
+can say `CANVAS-W 2/ CONSTANT RW` at compile time and mean it.
+
+## Controllers
+
+```
+POLL  PAD  PAD?  STICK-X  STICK-Y
+```
+
 ## Test support
 
 ```

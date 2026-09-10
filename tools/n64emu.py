@@ -40,6 +40,16 @@ class N64:
         self.imem = bytearray(0x1000)
         self.vi = [0] * 16
         self.pi = [0] * 8
+        self.si_dram = 0
+        self.pif = bytearray(64)
+        # Four joybus channels.  A BlueRetro adapter can present a
+        # controller, a mouse or a keyboard on any of them, so this can too.
+        self.pads = [
+            {"kind": "pad", "buttons": 0, "x": 0, "y": 0},
+            {"kind": "mouse", "buttons": 0, "dx": 0, "dy": 0},
+            {"kind": "keyboard", "keys": []},
+            None,
+        ]
         self.reg = [0] * 32
         self.cp0 = [0] * 32
         self.hi = self.lo = 0
@@ -78,8 +88,11 @@ class N64:
         if 0x04600000 <= p < 0x04600040:
             idx = (p - 0x04600000) >> 2
             return 0 if idx == 4 else self.pi[idx]  # PI_STATUS: never busy
-        if 0x04800000 <= p < 0x04800020:            # SI
+        if 0x04800000 <= p < 0x04800020:            # SI: never busy
             return 0
+        if 0x1FC007C0 <= p < 0x1FC00800:
+            off = p - 0x1FC007C0
+            return struct.unpack_from(">I", self.pif, off)[0]
         if 0x04300000 <= p < 0x04300010:            # MI
             return 0x01010101 if p == 0x0430000C else 0
         if 0x10000000 <= p < 0x10000000 + len(self.rom):
@@ -113,9 +126,122 @@ class N64:
             return
         if 0x04040000 <= p < 0x04040020 or 0x04300000 <= p < 0x04300010:
             return
+        if 0x04800000 <= p < 0x04800020:
+            idx = (p - 0x04800000) >> 2
+            if idx == 0:                            # SI_DRAM_ADDR
+                self.si_dram = val & 0x00FFFFFF
+            elif idx == 1:                          # PIF -> RDRAM
+                self.ram[self.si_dram:self.si_dram + 64] = self.pif
+            elif idx == 4:                          # RDRAM -> PIF, then run
+                self.pif[:] = self.ram[self.si_dram:self.si_dram + 64]
+                self.joybus()
+            return
+        if 0x1FC007C0 <= p < 0x1FC00800:
+            struct.pack_into(">I", self.pif, p - 0x1FC007C0, val)
+            return
         if 0x1FC00000 <= p < 0x1FC00800:
             return
         raise Fault(f"write32 to unmapped {p:08x} at pc {self.pc:08x}")
+
+    # ----------------------------------------------------------- joybus
+    def joybus(self):
+        """What the PIF does with a command block: walk the four channels,
+        answer for whatever is plugged into each one."""
+        b = self.pif
+        i = 0
+        channel = 0
+        while i < 64 and channel < 4:
+            cmd = b[i]
+            if cmd == 0xFE:
+                break
+            if cmd == 0xFF:
+                i += 1
+                continue
+            if cmd in (0x00, 0xFD):
+                channel += 1
+                i += 1
+                continue
+            tx = cmd & 0x3F
+            rx = b[i + 1] & 0x3F
+            op = b[i + 2] if tx else 0
+            resp = i + 2 + tx
+            pad = self.pads[channel] if channel < 4 else None
+            kind = pad["kind"] if pad else None
+            if pad is None:
+                b[i + 1] |= 0x80                    # nothing on this channel
+            elif op in (0x00, 0xFF) and rx >= 3:    # identify
+                ident = {"pad": (0x05, 0x00, 0x02),
+                         "mouse": (0x02, 0x00, 0x00),
+                         "keyboard": (0x00, 0x02, 0x00)}[kind]
+                b[resp + 0], b[resp + 1], b[resp + 2] = ident
+            elif op == 0x01 and kind == "pad" and rx >= 4:
+                b[resp + 0] = (pad["buttons"] >> 8) & 0xFF
+                b[resp + 1] = pad["buttons"] & 0xFF
+                b[resp + 2] = pad["x"] & 0xFF
+                b[resp + 3] = pad["y"] & 0xFF
+            elif op == 0x01 and kind == "mouse" and rx >= 4:
+                b[resp + 0] = (pad["buttons"] >> 8) & 0xFF
+                b[resp + 1] = pad["buttons"] & 0xFF
+                b[resp + 2] = pad["dx"] & 0xFF      # relative, and consumed
+                b[resp + 3] = pad["dy"] & 0xFF
+                pad["dx"] = pad["dy"] = 0
+            elif op == 0x13 and kind == "keyboard" and rx >= 7:
+                keys = (pad["keys"] + [0, 0, 0])[:3]
+                for k in range(3):
+                    b[resp + k * 2] = (keys[k] >> 8) & 0xFF
+                    b[resp + k * 2 + 1] = keys[k] & 0xFF
+                b[resp + 6] = 0
+            else:
+                b[i + 1] |= 0x40                    # unsupported: time out
+            i = resp + rx
+            channel += 1
+
+    def buttons(self, mask, down=True, pad=0):
+        p = self.pads[pad]
+        if p is None:
+            return
+        if down:
+            p["buttons"] |= mask
+        else:
+            p["buttons"] &= ~mask
+
+    def channel(self, index, kind):
+        """Plug something into a channel: 'pad', 'mouse', 'keyboard', None."""
+        if kind is None:
+            self.pads[index] = None
+        elif kind == "pad":
+            self.pads[index] = {"kind": "pad", "buttons": 0, "x": 0, "y": 0}
+        elif kind == "mouse":
+            self.pads[index] = {"kind": "mouse", "buttons": 0, "dx": 0, "dy": 0}
+        else:
+            self.pads[index] = {"kind": "keyboard", "keys": []}
+
+    def mouse_move(self, dx, dy, index=1):
+        p = self.pads[index]
+        if p and p["kind"] == "mouse":
+            p["dx"] = max(-127, min(127, p["dx"] + dx))
+            p["dy"] = max(-127, min(127, p["dy"] + dy))
+
+    def mouse_button(self, mask, down=True, index=1):
+        p = self.pads[index]
+        if p and p["kind"] == "mouse":
+            if down:
+                p["buttons"] |= mask
+            else:
+                p["buttons"] &= ~mask
+
+    def key(self, code, down=True, index=2):
+        """Our emulated keyboard sends ASCII; a Randnet one would not."""
+        p = self.pads[index]
+        if not p or p["kind"] != "keyboard":
+            return
+        if isinstance(code, str):
+            code = ord(code)
+        if down:
+            if code not in p["keys"]:
+                p["keys"] = (p["keys"] + [code])[:3]
+        elif code in p["keys"]:
+            p["keys"].remove(code)
 
     def _pi_dma(self, length):
         dst = self.pi[0] & 0x00FFFFFF

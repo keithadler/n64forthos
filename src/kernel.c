@@ -4,6 +4,10 @@
 #ifdef TEST_BUILD
 #include "tests_fth.h"
 #endif
+#ifdef APP_DEBUG
+#include "apps/mandel_fth.h"
+#include "apps/cornell_fth.h"
+#endif
 
 #define FB_PHYS   0x00200000u                   /* 2 MiB into RDRAM */
 #define FB_ADDR   (0xA0000000u | FB_PHYS)       /* written uncached */
@@ -138,10 +142,14 @@ static u32 word_count(void)
     return forth_word_count();
 }
 
-static void status_bar(u32 ram_mb, u32 frames)
+static u32 ram_mb_cached = 4;
+
+void kernel_status_bar(void)
 {
     char buf[81];
     char *p = buf;
+    u32 ram_mb = ram_mb_cached;
+    u32 frames = vi_frames();
 
     p = put_str(p, " n64forthos 0.1   VR4300   640x480x16   RDRAM ");
     p = put_u32(p, ram_mb, 10, 0, ' ');
@@ -158,10 +166,8 @@ static void status_bar(u32 ram_mb, u32 frames)
 /* The console has no keyboard yet, so the boot session is typed for it. */
 static const char *const session[] = {
     "GREET",
-    ": SQUARE DUP * ;   7 SQUARE .",
-    ": COUNTDOWN 10 0 DO 10 I - . LOOP ;   COUNTDOWN",
     "SEE HELLO",
-    "BARS HELLO-WINDOW   DEPTH .",
+    "HELLO-WINDOW",
 };
 
 void kmain(void)
@@ -169,10 +175,11 @@ void kmain(void)
     u32 ram = rdram_size();
     unsigned i;
 
+    ram_mb_cached = ram;
     vi_init((void *)FB_ADDR);
     install_vectors();
     con_init(C_BG);
-    con_scroll_region(2, 28);
+    con_scroll_region(2, 19);
 
     con_color(C_CYAN);
     con_puts("n64forthos");
@@ -180,8 +187,10 @@ void kmain(void)
     con_puts("  --  a Forth system for the Nintendo 64\n\n");
 
     con_color(C_TEXT);
-    con_printf("  VI     640x480 16bpp interlaced, framebuffer at %08x\n", FB_ADDR);
-    con_printf("  CPU    VR4300, caches invalidated, exception vectors installed\n");
+    con_printf("  VI     640x480 16bpp interlaced\n");
+    con_printf("  FB     %08x, uncached\n", FB_ADDR);
+    con_printf("  CPU    VR4300, caches invalidated\n");
+    con_printf("  EXC    vectors at 80000000\n");
     con_printf("  RDRAM  %u MiB\n", ram);
 
     forth_init();
@@ -210,12 +219,23 @@ void kmain(void)
     }
 #endif
 
-    con_color(C_DIM);
-    con_puts("ok> ");
     con_color(C_TEXT);
-
-    for (;;) {
-        status_bar(ram, vi_frames());
+#ifdef APP_DEBUG
+    /* Development path: compile an app on the bare console, where its
+     * errors are visible, and run it. */
+#ifndef APP_DEBUG_SIZE
+#define APP_DEBUG_SIZE 256
+#endif
+    forth_set_canvas(408, 64, APP_DEBUG_SIZE, APP_DEBUG_SIZE);
+    con_puts("compiling app\n");
+    forth_eval_lines(APP_DEBUG_SRC);
+    con_printf("%u words\n", word_count());
+    con_puts("running\n");
+    forth_eval(APP_DEBUG_RUN);
+    con_puts("done\n");
+    for (;;)
         vi_wait_vblank();
-    }
+#else
+    desktop_run();
+#endif
 }

@@ -27,8 +27,13 @@ def strip(src):
 
 
 def main():
-    src, dst, sym = sys.argv[1], sys.argv[2], sys.argv[3]
-    lines = strip(open(src).read())
+    args = [a for a in sys.argv[1:] if not a.startswith("--")]
+    raw = "--raw" in sys.argv
+    src, dst, sym = args[0], args[1], args[2]
+    text = open(src).read()
+    # An app's source is shown on screen as well as run, so it keeps its
+    # comments and its shape.  Boot sources are stripped.
+    lines = text.splitlines() if raw else strip(text)
     guard = os.path.basename(dst).upper().replace(".", "_")
 
     with open(dst, "w") as f:

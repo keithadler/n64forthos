@@ -23,13 +23,19 @@ TESTROM  := build/n64forthos-test.z64
 CFLAGS  := -target mips-unknown-elf -march=mips2 -mabi=32 -mno-abicalls \
            -fno-pic -mno-gpopt -G0 -msoft-float -mno-check-zero-division \
            -ffreestanding -fno-builtin -nostdlib -fno-stack-protector \
-           -Wall -Wextra -Os -fomit-frame-pointer
+           -Wall -Wextra -O2 -fomit-frame-pointer
 LDFLAGS := -T link.ld --no-warnings
 
-CSRC    := src/kernel.c src/video.c src/console.c src/gfx.c src/forth.c
+CSRC    := src/kernel.c src/video.c src/console.c src/gfx.c src/input.c \
+           src/repl.c src/desktop.c src/forth.c
 OBJS    := build/entry.o $(patsubst src/%.c,build/%.o,$(CSRC))
 TOBJS   := build/entry-t.o $(patsubst src/%.c,build/%-t.o,$(CSRC))
-GEN     := src/font.h src/system_fth.h src/tests_fth.h
+DOBJS   := build/entry-d.o $(patsubst src/%.c,build/%-d.o,$(CSRC))
+APP     ?= mandel_fth
+APPRUN  ?= MANDEL
+APPSIZE ?= 256
+GEN     := src/font.h src/system_fth.h src/tests_fth.h \
+           src/apps/mandel_fth.h src/apps/cornell_fth.h
 
 all: $(ROM)
 
@@ -42,6 +48,9 @@ src/system_fth.h: src/system.fth tools/mkboot.py
 src/tests_fth.h: test/tests.fth tools/mkboot.py
 	python3 tools/mkboot.py test/tests.fth src/tests_fth.h tests_fth
 
+src/apps/%_fth.h: src/apps/%.fth tools/mkboot.py
+	python3 tools/mkboot.py --raw $< $@ $*_fth
+
 build/%.o: src/%.c src/n64.h $(GEN) | build
 	$(CC) $(CFLAGS) -c $< -o $@
 
@@ -53,6 +62,24 @@ build/%.o: src/%.S | build
 
 build/%-t.o: src/%.S | build
 	$(CC) $(CFLAGS) -c $< -o $@
+
+build/%-d.o: src/%.c src/n64.h $(GEN) | build
+	$(CC) $(CFLAGS) -DAPP_DEBUG -DAPP_DEBUG_SRC=$(APP) \
+	      -DAPP_DEBUG_RUN='"$(APPRUN)"' -DAPP_DEBUG_SIZE=$(APPSIZE) \
+	      -c $< -o $@
+
+build/%-d.o: src/%.S | build
+	$(CC) $(CFLAGS) -c $< -o $@
+
+build/kernel-dbg.elf: $(DOBJS) link.ld
+	$(LD) $(LDFLAGS) -o $@ $(DOBJS)
+
+build/n64forthos-dbg.z64: build/ipl3.bin build/kernel-dbg.bin tools/mkrom.py
+	python3 tools/mkrom.py build/ipl3.bin build/kernel-dbg.bin $@ N64FORTHOS-D
+
+dbg: build/n64forthos-dbg.z64
+	python3 tools/run.py build/n64forthos-dbg.z64 --instr $(INSTR) --text \
+	    --shot captures/dbg.png
 
 build/kernel.elf: $(OBJS) link.ld
 	$(LD) $(LDFLAGS) -o $@ $(OBJS)
@@ -69,11 +96,17 @@ build/ipl3.elf: build/ipl3.o
 build/ipl3.bin: build/ipl3.elf
 	$(OBJCOPY) -O binary --only-section=.ipl3 $< $@
 
-$(ROM): build/ipl3.bin build/kernel.bin tools/mkrom.py
-	python3 tools/mkrom.py build/ipl3.bin build/kernel.bin $@ N64FORTHOS
+# IPL3 ?= a 0xFB8-byte boot block to use instead of ours.  Our own gets the
+# kernel into RDRAM and runs everywhere an emulator is involved, but a real
+# console needs one that also initialises RDRAM and satisfies the CIC -- see
+# "Real hardware" in the README.
+IPL3    ?= build/ipl3.bin
 
-$(TESTROM): build/ipl3.bin build/kernel-test.bin tools/mkrom.py
-	python3 tools/mkrom.py build/ipl3.bin build/kernel-test.bin $@ N64FORTHOS-T
+$(ROM): $(IPL3) build/kernel.bin tools/mkrom.py
+	python3 tools/mkrom.py $(IPL3) build/kernel.bin $@ N64FORTHOS
+
+$(TESTROM): $(IPL3) build/kernel-test.bin tools/mkrom.py
+	python3 tools/mkrom.py $(IPL3) build/kernel-test.bin $@ N64FORTHOS-T
 
 build:
 	@mkdir -p build captures
@@ -88,9 +121,13 @@ serve: $(ROM)
 	python3 serve.py 8795
 
 test: $(ROM) $(TESTROM)
-	python3 tools/check.py
+	python3 -u tools/check.py
 
 clean:
 	rm -rf build $(GEN)
 
-.PHONY: all run gui serve test clean
+INSTR   ?= 40000000
+
+.PHONY: all run gui serve test dbg clean
+
+.PRECIOUS: src/apps/%_fth.h

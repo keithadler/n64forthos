@@ -30,8 +30,14 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
 if __name__ == "__main__":
     if os.path.exists(ROM):
-        shutil.copyfile(ROM, os.path.join(WEB, "rom.z64"))
-        print(f"rom.z64: {os.path.getsize(ROM) // (1024 * 1024)} MiB")
+        # The cartridge is 64 MiB of mask ROM, nearly all of it zeroes; the
+        # page only needs the part the console actually reads.
+        with open(ROM, "rb") as f:
+            image = f.read(2 << 20)
+        with open(os.path.join(WEB, "rom.z64"), "wb") as f:
+            f.write(image)
+        print(f"rom.z64: {len(image) // 1024} KiB of a "
+              f"{os.path.getsize(ROM) // (1024 * 1024)} MiB cartridge")
     socketserver.TCPServer.allow_reuse_address = True
     with socketserver.TCPServer(("127.0.0.1", PORT), Handler) as httpd:
         print(f"http://127.0.0.1:{PORT}")

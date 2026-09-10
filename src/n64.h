@@ -52,6 +52,65 @@ void vi_init(void *framebuffer);
 void vi_wait_vblank(void);
 u32 vi_frames(void);
 
+/* input.c -- controllers */
+#define PAD_A      0x8000
+#define PAD_B      0x4000
+#define PAD_Z      0x2000
+#define PAD_START  0x1000
+#define PAD_UP     0x0800
+#define PAD_DOWN   0x0400
+#define PAD_LEFT   0x0200
+#define PAD_RIGHT  0x0100
+#define PAD_L      0x0020
+#define PAD_R      0x0010
+#define PAD_CUP    0x0008
+#define PAD_CDOWN  0x0004
+#define PAD_CLEFT  0x0002
+#define PAD_CRIGHT 0x0001
+
+#define DEV_NONE     0
+#define DEV_PAD      1
+#define DEV_MOUSE    2
+#define DEV_KEYBOARD 3
+
+/* The mouse reports its two buttons where a controller reports A and B. */
+#define MOUSE_LEFT   PAD_A
+#define MOUSE_RIGHT  PAD_B
+
+typedef struct {
+    u16 buttons;
+    s8 stick_x, stick_y;
+    u8 present;
+} pad_t;
+
+typedef struct {
+    int x, y;                   /* the kernel keeps the pointer position */
+    u16 buttons, edges;
+    u8 present;
+} mouse_t;
+
+typedef struct {
+    u16 keys[3];                /* the keyboard reports up to three at once */
+    u16 last_raw;
+    u8 nkeys;
+    u8 present;
+} kbd_t;
+
+void input_init(void);
+void input_poll(void);
+const pad_t *input_pad(int n);
+const mouse_t *input_mouse(void);
+const kbd_t *input_keyboard(void);
+int input_kind(int n);
+int input_getchar(void);
+void input_key_map(int code, int ascii);
+int input_key_mapped(int code);
+u16 input_buttons(int n);
+u16 input_pressed(int n);
+
+/* repl.c -- the prompt, driven by the on-screen keyboard */
+void repl_run(void);
+
 /* gfx.c -- everything that touches pixels */
 u16 *gfx_fb(void);
 void gfx_cls(u16 c);
@@ -64,6 +123,8 @@ void gfx_line(int x0, int y0, int x1, int y1, u16 c);
 void gfx_glyph(int x, int y, char ch, u16 fg, u16 bg, int opaque);
 int gfx_text(int x, int y, const char *s, int len, u16 c);
 void gfx_blit(const u16 *src, int x, int y, int w, int h, int keyed);
+void gfx_cursor_show(int x, int y, u16 fill, u16 edge);
+void gfx_cursor_hide(void);
 
 /* console.c */
 void con_init(u16 bg);
@@ -77,15 +138,25 @@ void con_status(const char *s);
 void con_at(int row, int col);
 int con_row(void);
 void con_scroll_region(int top, int bottom);
+void con_erase_row(int row);
+int con_col(void);
 
 /* kernel.c */
 void panic(const char *msg);
+void kernel_status_bar(void);
 u32 rdram_size(void);
 
 /* forth.c */
 void forth_init(void);
 void forth_eval(const char *src);
 void forth_eval_lines(const char *src);
+void forth_set_canvas(int x, int y, int w, int h);
+u32 forth_mark(void);
+void forth_release(u32 mark);
+u32 forth_word_count(void);
+
+/* desktop.c */
+void desktop_run(void);
 int forth_depth(void);
 
 #endif /* N64_H */
