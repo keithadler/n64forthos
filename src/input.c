@@ -165,6 +165,13 @@ void input_init(void)
     keymap_default();
     identify_countdown = 0;
     identify();
+    /* Whatever is held right now was pressed to get here -- to open this
+     * window, most likely -- so it is not a fresh press.  Without this the
+     * console types its highlighted key the moment it opens. */
+    input_poll();
+    for (i = 0; i < 4; i++)
+        edges[i] = 0;
+    mouse.edges = 0;
 }
 
 void input_poll(void)

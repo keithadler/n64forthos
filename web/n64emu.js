@@ -24,6 +24,8 @@ export class N64 {
     this.pi = new Uint32Array(8);
     this.pif = new Uint8Array(64);
     this.siDram = 0;
+    // The RDP, to the extent this kernel uses it: fill rectangles.
+    this.dp = { start: 0, end: 0, colour: 0, img: 0, width: 640 };
     this.reg = new Int32Array(32);
     this.cp0 = new Int32Array(32);
     this.hi = 0; this.lo = 0;
@@ -74,6 +76,10 @@ export class N64 {
       return idx === 4 ? 0 : this.pi[idx];
     }
     if (p >= 0x04800000 && p < 0x04800020) return 0;
+    if (p >= 0x04100000 && p < 0x04100020) {
+      const idx = (p - 0x04100000) >> 2;
+      return idx === 0 ? this.dp.start : (idx === 1 || idx === 2) ? this.dp.end : 0;
+    }
     if (p >= 0x04300000 && p < 0x04300010) return p === 0x0430000c ? 0x01010101 : 0;
     if (p >= 0x1fc007c0 && p < 0x1fc00800) {
       const o = p - 0x1fc007c0, b = this.pif;
@@ -100,6 +106,12 @@ export class N64 {
       const idx = (p - 0x04600000) >> 2;
       this.pi[idx] = val;
       if (idx === 3) this.piDma(val + 1);
+      return;
+    }
+    if (p >= 0x04100000 && p < 0x04100020) {
+      const idx = (p - 0x04100000) >> 2;
+      if (idx === 0) this.dp.start = val;
+      else if (idx === 1) { this.dp.end = val; this.rdpRun(); }
       return;
     }
     if (p >= 0x04800000 && p < 0x04800020) {
@@ -151,6 +163,42 @@ export class N64 {
       const b = this.pif;
       this.ramWords[(this.siDram + i) >>> 2] =
         ((b[i] << 24) | (b[i + 1] << 16) | (b[i + 2] << 8) | b[i + 3]) >>> 0;
+    }
+  }
+
+  /* --------------------------------------------------------------- RDP */
+  rdpRun() {
+    let at = this.dp.start, end = this.dp.end;
+    while (at + 8 <= end) {
+      const hi = this.ramWords[at >>> 2], lo = this.ramWords[(at + 4) >>> 2];
+      at += 8;
+      const cmd = hi >>> 24;
+      if (cmd === 0xff) {                       // set colour image
+        this.dp.img = lo & 0x00ffffff;
+        this.dp.width = (hi & 0x3ff) + 1;
+      } else if (cmd === 0xf7) {                // set fill colour
+        this.dp.colour = lo & 0xffff;
+      } else if (cmd === 0xf6) {                // fill rectangle
+        this.rdpFill((lo >>> 14) & 0x3ff, (lo >>> 2) & 0x3ff,
+                     (hi >>> 14) & 0x3ff, (hi >>> 2) & 0x3ff, this.dp.colour);
+      } else if (cmd === 0xe9 || cmd === 0xe7 || cmd === 0xe8 ||
+                 cmd === 0xe6 || cmd === 0xed || cmd === 0xef) {
+        /* syncs, scissor, other modes */
+      } else {
+        throw new Error(`RDP command ${cmd.toString(16)}`);
+      }
+    }
+  }
+
+  rdpFill(x0, y0, x1, y1, colour) {
+    const base = this.dp.img, width = this.dp.width;
+    const pair = (((colour << 16) | colour) >>> 0);
+    for (let y = y0; y <= y1; y++) {
+      const row = base + y * width * 2;
+      let x = x0;
+      if (x & 1) { this.write16(row + x * 2, colour); x++; }
+      for (; x + 1 <= x1; x += 2) this.ramWords[(row + x * 2) >>> 2] = pair;
+      if (x <= x1) this.write16(row + x * 2, colour);
     }
   }
 

@@ -44,6 +44,8 @@ class N64:
         self.vi = [0] * 16
         self.pi = [0] * 8
         self.si_dram = 0
+        # The RDP, to the extent this kernel uses it: fill rectangles.
+        self.dp = {"start": 0, "end": 0, "colour": 0, "img": 0, "width": 640}
         self.pif = bytearray(64)
         # Four joybus channels.  A BlueRetro adapter can present a
         # controller, a mouse or a keyboard on any of them, so this can too.
@@ -94,6 +96,13 @@ class N64:
             return 0 if idx == 4 else self.pi[idx]  # PI_STATUS: never busy
         if 0x04800000 <= p < 0x04800020:            # SI: never busy
             return 0
+        if 0x04100000 <= p < 0x04100020:            # DPC: never busy
+            idx = (p - 0x04100000) >> 2
+            if idx == 0:
+                return self.dp["start"]
+            if idx in (1, 2):
+                return self.dp["end"]
+            return 0
         if 0x1FC007C0 <= p < 0x1FC00800:
             off = p - 0x1FC007C0
             return struct.unpack_from(">I", self.pif, off)[0]
@@ -130,6 +139,14 @@ class N64:
             return
         if 0x04040000 <= p < 0x04040020 or 0x04300000 <= p < 0x04300010:
             return
+        if 0x04100000 <= p < 0x04100020:
+            idx = (p - 0x04100000) >> 2
+            if idx == 0:
+                self.dp["start"] = val
+            elif idx == 1:
+                self.dp["end"] = val
+                self.rdp_run()
+            return
         if 0x04800000 <= p < 0x04800020:
             idx = (p - 0x04800000) >> 2
             if idx == 0:                            # SI_DRAM_ADDR
@@ -146,6 +163,56 @@ class N64:
         if 0x1FC00000 <= p < 0x1FC00800:
             return
         raise Fault(f"write32 to unmapped {p:08x} at pc {self.pc:08x}")
+
+    # -------------------------------------------------------------- RDP
+    def rdp_run(self):
+        """Walk the display list.  Only the commands this kernel sends are
+        implemented; anything else raises rather than being ignored."""
+        at, end = self.dp["start"], self.dp["end"]
+        while at + 8 <= end:
+            hi = struct.unpack_from(">I", self.ram, at)[0]
+            lo = struct.unpack_from(">I", self.ram, at + 4)[0]
+            at += 8
+            cmd = hi >> 24
+            if cmd == 0xFF:                     # set colour image
+                self.dp["img"] = lo & 0x00FFFFFF
+                self.dp["width"] = (hi & 0x3FF) + 1
+                if (hi >> 19) & 3 != 2:
+                    raise Fault("RDP colour image is not 16-bit")
+            elif cmd == 0xF7:                   # set fill colour
+                self.dp["colour"] = lo & 0xFFFF
+            elif cmd == 0xF6:                   # fill rectangle
+                x1 = (hi >> 14) & 0x3FF
+                y1 = (hi >> 2) & 0x3FF
+                x0 = (lo >> 14) & 0x3FF
+                y0 = (lo >> 2) & 0x3FF
+                self.rdp_fill(x0, y0, x1, y1, self.dp["colour"])
+            elif cmd in (0xE9, 0xE7, 0xE8, 0xE6, 0xED, 0xEF):
+                pass                            # syncs, scissor, other modes
+            else:
+                raise Fault(f"RDP command {cmd:02x} not implemented")
+
+    def rdp_fill(self, x0, y0, x1, y1, colour):
+        base = self.dp["img"]
+        width = self.dp["width"]
+        pair = ((colour << 16) | colour) & 0xFFFFFFFF
+        for y in range(y0, y1 + 1):
+            row = base + y * width * 2
+            x = x0
+            if x & 1:                           # odd start: one halfword
+                self.write16_ram(row + x * 2, colour)
+                x += 1
+            while x + 1 <= x1:
+                struct.pack_into(">I", self.ram, row + x * 2, pair)
+                x += 2
+            if x <= x1:
+                self.write16_ram(row + x * 2, colour)
+
+    def write16_ram(self, addr, value):
+        word = struct.unpack_from(">I", self.ram, addr & ~3)[0]
+        shift = 16 * (1 - ((addr >> 1) & 1))
+        word = (word & ~(0xFFFF << shift)) | ((value & 0xFFFF) << shift)
+        struct.pack_into(">I", self.ram, addr & ~3, word)
 
     # ----------------------------------------------------------- joybus
     def joybus(self):

@@ -26,7 +26,8 @@ CFLAGS  := -target mips-unknown-elf -march=mips2 -mabi=32 -mno-abicalls \
            -Wall -Wextra -O2 -fomit-frame-pointer
 LDFLAGS := -T link.ld --no-warnings
 
-CSRC    := src/kernel.c src/video.c src/console.c src/gfx.c src/input.c \
+CSRC    := src/kernel.c src/video.c src/console.c src/gfx.c src/rdp.c \
+           src/input.c \
            src/repl.c src/desktop.c src/forth.c
 OBJS    := build/entry.o $(patsubst src/%.c,build/%.o,$(CSRC))
 TOBJS   := build/entry-t.o $(patsubst src/%.c,build/%-t.o,$(CSRC))

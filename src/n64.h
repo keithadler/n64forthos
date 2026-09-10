@@ -111,6 +111,12 @@ u16 input_pressed(int n);
 /* repl.c -- the prompt, driven by the on-screen keyboard */
 void repl_run(void);
 
+/* rdp.c -- rectangle fills, done by the hardware that is good at them */
+void rdp_init(void *framebuffer);
+void rdp_fill(int x, int y, int w, int h, u16 colour);
+void rdp_wait(void);
+int rdp_ready(void);
+
 /* gfx.c -- everything that touches pixels */
 u16 *gfx_fb(void);
 void gfx_cls(u16 c);

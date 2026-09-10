@@ -21,10 +21,19 @@ void gfx_plot(int x, int y, u16 c)
         gfx_fb()[y * SCREEN_W + x] = c;
 }
 
+/* Above this many pixels it is worth handing the rectangle to the RDP: below
+ * it, setting up a display list costs more than the writes it saves. */
+#define RDP_WORTH_IT 512
+
 void gfx_box(int x, int y, int w, int h, u16 c)
 {
     u16 *fb = gfx_fb();
     int i, j;
+
+    if (w * h >= RDP_WORTH_IT && rdp_ready()) {
+        rdp_fill(x, y, w, h, c);
+        return;
+    }
 
     if (x < 0) { w += x; x = 0; }
     if (y < 0) { h += y; y = 0; }
