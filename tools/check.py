@@ -282,16 +282,18 @@ def run_wm(rom="build/n64forthos.z64"):
     # The pointer starts in the middle and a mouse reports at most 127 of
     # movement at a time, so walk it to the title bar in steps.  Positive dy
     # is upwards, the way the hardware reports it.
+    # A frame here does real work -- one of the windows is computing a
+    # fractal -- so each step gets long enough for the kernel to poll.
     for dx, dy in ((-87, 85), (-87, 85), (-86, 0)):
         m.mouse_move(dx, dy)
-        m.run(m.icount + 2 * FRAME)
+        m.run(m.icount + 12 * FRAME)
     m.mouse_button(0x8000, True)
-    m.run(m.icount + 4 * FRAME)
+    m.run(m.icount + 12 * FRAME)
     for _ in range(4):                          # carry it right and down
         m.mouse_move(40, -30)
-        m.run(m.icount + 3 * FRAME)
+        m.run(m.icount + 12 * FRAME)
     m.mouse_button(0x8000, False)
-    m.run(m.icount + 8 * FRAME)
+    m.run(m.icount + 12 * FRAME)
     after = close_box(m)
     check(after is not None and after != before,
           f"and dragging its title bar moved it ({before} -> {after})")

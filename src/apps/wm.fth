@@ -211,10 +211,65 @@ VARIABLE HIT
    CANVAS-Y CANVAS-H 2/ + 14 -   32 28
    255 190 90 RGB BOX ;
 
+\ --- a window that computes -----------------------------------------------
+\ Escape-time, a couple of rows a frame, straight into the window's canvas.
+\ It notices when the window has been carried somewhere else and starts
+\ again, because the pixels it drew stayed where they were.
+
+262144 CONSTANT FOUR
+    24 CONSTANT DEPTH
+VARIABLE ZX  VARIABLE ZY
+VARIABLE MX  VARIABLE MY
+VARIABLE IT
+VARIABLE MROW  VARIABLE LASTX  VARIABLE LASTY
+
+: ESCAPE ( -- n )
+   0 ZX ! 0 ZY ! 0 IT !
+   BEGIN
+      ZX @ ZX @ F*  ZY @ ZY @ F*
+      2DUP + FOUR <  IT @ DEPTH < AND
+   WHILE
+      ZX @ ZY @ F* 2*  MY @ +
+      >R  -  MX @ +  ZX !  R>  ZY !
+      1 IT +!
+   REPEAT
+   2DROP IT @ ;
+
+: SHADE ( n -- colour )
+   DUP DEPTH < 0= IF DROP 8 10 30 RGB EXIT THEN
+   DUP 11 * 255 MIN
+   OVER 6 * 40 + 255 MIN
+   ROT 4 * 90 + 255 MIN
+   RGB ;
+
+: MANDEL-ROW ( n -- )                  \ one row of the window's canvas
+   DUP CANVAS-H < 0= IF DROP EXIT THEN
+   DUP -81920 SWAP 163840 CANVAS-H / * + MY !
+   CANVAS-Y +
+   CANVAS-W 0 DO
+      -131072 I 163840 CANVAS-W / * + MX !
+      ESCAPE SHADE
+      OVER
+      CANVAS-X I +  SWAP  ROT
+      PLOT
+   LOOP
+   DROP ;
+
+: DRAW-MANDEL
+   CANVAS-X LASTX @ <>  CANVAS-Y LASTY @ <>  OR IF
+      0 MROW !  CANVAS-X LASTX !  CANVAS-Y LASTY !
+   THEN
+   2 0 DO
+      MROW @ MANDEL-ROW
+      MROW @ CANVAS-H < IF 1 MROW +! THEN
+   LOOP ;
+
 : START
    0 #WINS !  -1 DRAGGING !  0 WAS-DOWN !  1 DIRTY !
    \ Whole characters across and whole rows down: the titles are then on
    \ the same grid as everything else the system draws.
     40  64 264 112  S" hello"    ' DRAW-HELLO  NEW-WINDOW
    152 208 240 128  S" colours"  ' DRAW-BARS   NEW-WINDOW
-   328  96 248 128  S" bounce"   ' DRAW-BOUNCE NEW-WINDOW ;
+   328  96 248 128  S" bounce"   ' DRAW-BOUNCE NEW-WINDOW
+   -1 LASTX !  -1 LASTY !
+   360 256 216 176  S" mandel"   ' DRAW-MANDEL NEW-WINDOW ;

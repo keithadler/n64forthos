@@ -110,6 +110,11 @@ Repainting everything every frame would flicker, so the chrome is drawn when
 something moves and only the contents are drawn between times, each inside
 its own window.
 
+One of the four demonstration windows computes: it renders a couple of rows
+of an escape-time fractal a frame into its own canvas, notices when it has
+been carried somewhere else and starts again, and the other windows go on
+animating around it.
+
 **Life** ([src/apps/life.fth](src/apps/life.fth)) — Conway's life, 64×64 on a
 torus, two generations held in the dictionary. A generation a pass, and it
 runs until you stop it.
