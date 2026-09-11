@@ -6,17 +6,23 @@ itself that is written in Forth, and puts a desktop on the screen.
 
 ![the desktop](docs/img/desktop.png)
 
-Two applications ship with it, and both are **the Forth source you are
-looking at**: the window shows the code, and the button next to it runs that
-code into the canvas beside it.
+Seven things sit on that desktop. Four of them are **the Forth source you are
+looking at**: the window shows the code, and the button beside it runs that
+code into the canvas next to it.
 
 ![the Mandelbrot app](docs/img/app-mandel.png)
 ![the Cornell box](docs/img/app-cornell.png)
 
-The console is a real Forth prompt. With nothing but a controller you type on
-an on-screen keyboard; with a [BlueRetro](https://blueretro.io) adapter the
-N64 takes a Bluetooth **mouse and keyboard**, and the desktop grows a pointer
-and the prompt takes dictation.
+One of them is a **window manager, also written in Forth** — overlapping
+windows you drag by their title bars, each one a canvas and a clip handed to
+a Forth word once a frame.
+
+![the window manager](docs/img/wm.png)
+
+And the console is a real Forth prompt. With nothing but a controller you
+type on an on-screen keyboard; with a [BlueRetro](https://blueretro.io)
+adapter the N64 takes a Bluetooth **mouse and keyboard**, and the desktop
+grows a pointer while the prompt takes dictation.
 
 ```bash
 make            # build/n64forthos.z64, a 64 MiB cartridge image
@@ -125,6 +131,10 @@ runs until you stop it.
 
 **Devices** — what answered on each of the four joybus channels, live, and
 the place to teach the system a real keyboard's key codes.
+
+Each application is a file in [src/apps](src/apps), compiled into the
+dictionary when its window opens and rolled back out of it when the window
+closes.
 
 ![the Navier-Stokes demo](docs/img/app-navier.png)
 
@@ -316,6 +326,34 @@ web/            the page, and the emulator ported to JavaScript
 
 Built with Homebrew's LLVM, which targets big-endian MIPS out of the box, and
 lld. There is no cross-gcc to build.
+
+## Where this got to
+
+Everything described above works, is tested, and is in this repository. The
+system boots, compiles itself, runs applications written in its own language,
+takes a mouse and a keyboard, and manages windows. Rendering is three to
+seven times faster than where it started, and the interface is no longer the
+part that costs anything: a full screen rebuild is about ten milliseconds,
+and an idle frame touches a few hundred pixels.
+
+Three things were deliberately left for later, and none of them is hiding:
+
+**A console has not seen it yet.** The boot block does not initialise RDRAM,
+and the PIF checksums it against the CIC — both solved by handing
+`make IPL3=...` a boot block that does the work.
+[docs/HARDWARE.md](docs/HARDWARE.md) is the guide for the day the hardware
+arrives, including what each failure would mean and how to teach the system a
+real Randnet keyboard, whose codes are still unverified.
+
+**The RSP is idle.** Eight lanes of sixteen-bit arithmetic, and the
+applications spend all their time on exactly the sort of maths it exists for.
+It is the last large multiplier, and taking it would mean the applications
+stop being Forth you can read in the window beside the picture — which is why
+it was not taken.
+
+**The window manager is an application, not the shell.** Making it the shell
+— the launcher as a Forth window, applications opening as windows — is the
+obvious next step and a contained one.
 
 ## Licence
 
