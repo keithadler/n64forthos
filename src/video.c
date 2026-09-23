@@ -28,6 +28,7 @@ void vi_wait_vblank(void)
 {
     u32 guard;
 
+    audio_pump();                       /* the one thing that runs regardless */
     for (guard = 0; guard < 2000000u; guard++)
         if ((VI_CURRENT >> 1) < SCREEN_H)
             break;

@@ -46,12 +46,37 @@ static int dsp;
 static cell rstack[RSTACK_MAX];
 static int rsp;
 static cell cstack[CSTACK_MAX];
+/* Marks on the control stack that are not addresses: what ?DO and CASE
+ * leave for LOOP and ENDCASE to find. */
+#define CS_QDO   ((cell)0xC0DE0001)
+/* LEAVE's forward jumps, resolved by the LOOP that ends their loop.  A zero
+ * separates one loop's from the next one out. */
+#define LEAVES_MAX 32
+static cell leaves[LEAVES_MAX];
+static int nleaves;
+#define CS_CASE  ((cell)0xC0DE0002)
 static int csp;
 static cell def_header;         /* definition under construction, 0 = none */
 static cell def_prev_latest;
 static int state;               /* 0 = interpreting, 1 = compiling */
 static int base = 10;
 static int aborted;
+static int interrupted;         /* the break key: stop the whole file too */
+static u32 ticks;
+
+static void error(const char *msg, const char *name, int len);
+
+/* Called where a running program goes round: loops, and the helpers that
+ * compiled code calls.  Every so often it looks for the break key. */
+static void tick(void)
+{
+    if (++ticks & 0x7FFF)
+        return;
+    if (input_break_check()) {
+        interrupted = 1;
+        error("interrupted", 0, 0);
+    }
+}
 
 /* The input stream the outer interpreter is chewing through. */
 static const char *in_p;
@@ -83,6 +108,7 @@ static void error(const char *msg, const char *name, int len)
     def_header = 0;
     state = 0;
     dsp = rsp = csp = 0;
+    nleaves = 0;
     aborted = 1;
 }
 
@@ -163,6 +189,19 @@ static int addr_ok(cell a, u32 size, u32 align)
         return 1;
     error("address out of range", 0, 0);
     return 0;
+}
+
+/* A file name handed over from Forth: its bytes must be readable, and it
+ * must be a name the file system could hold. */
+static int name_ok(cell a, cell u)
+{
+    if (u < 0 || !addr_ok(a, (u32)u, 0))
+        return 0;
+    if (!fs_name_ok((const char *)(u32)a, (int)u)) {
+        error(fs_error(FS_EBADNAME), (const char *)(u32)a, u > 24 ? 24 : (int)u);
+        return 0;
+    }
+    return 1;
 }
 
 static void cpush(cell v)
@@ -457,12 +496,20 @@ static void prim(int code, cell xt, cell **ipp)
         *ipp += (len + 3) / 4;
         break;
     }
-    case P_BRANCH:  *ipp = (cell *)(u32)**ipp; break;
+    case P_BRANCH:
+    case P_AGAINBR:
+        if ((cell *)(u32)**ipp < *ipp)
+            tick();
+        *ipp = (cell *)(u32)**ipp;
+        break;
     case P_ZBRANCH:
-        if (pop() == 0)
+        if (pop() == 0) {
+            if ((cell *)(u32)**ipp < *ipp)
+                tick();                 /* UNTIL going round again */
             *ipp = (cell *)(u32)**ipp;
-        else
+        } else {
             (*ipp)++;
+        }
         break;
     case P_DO:      b = pop(); a = pop(); rpush(a); rpush(b); break;
     case P_LOOP: {
@@ -470,7 +517,8 @@ static void prim(int code, cell xt, cell **ipp)
         idx = rpop();
         limit = rpop();
         idx++;
-        if (idx < limit) {
+        tick();
+        if (idx < limit && !aborted) {
             rpush(limit);
             rpush(idx);
             *ipp = (cell *)(u32)**ipp;
@@ -479,10 +527,120 @@ static void prim(int code, cell xt, cell **ipp)
         }
         break;
     }
+    case P_QDO:                         /* ( limit start -- ) or skip */
+        b = pop(); a = pop();
+        if (a == b) {
+            *ipp = (cell *)(u32)**ipp;
+        } else {
+            rpush(a);
+            rpush(b);
+            (*ipp)++;
+        }
+        break;
+    case P_PLOOP: {                     /* ( n -- ) done when it crosses */
+        cell limit, idx, n = pop(), next;
+
+        idx = rpop();
+        limit = rpop();
+        next = (cell)((u32)idx + (u32)n);
+        tick();
+        if (((idx - limit) ^ (next - limit)) >= 0 && !aborted) {
+            rpush(limit);
+            rpush(next);
+            *ipp = (cell *)(u32)**ipp;
+        } else {
+            (*ipp)++;
+        }
+        break;
+    }
+    case P_DOCREATE: {                  /* push the body; run DOES> if any */
+        cell does = *(cell *)(u32)(xt + 4);
+
+        push(xt + 8);
+        if (does) {
+            rpush((cell)(u32)*ipp);
+            *ipp = (cell *)(u32)does;
+        }
+        break;
+    }
+    case P_PDOES: {                     /* the word just CREATEd does this */
+        cell last = latest ? name_to_xt(latest) : 0;
+
+        if (!last || *(cell *)(u32)last != P_DOCREATE) {
+            error("DOES> without CREATE", 0, 0);
+            break;
+        }
+        *(cell *)(u32)(last + 4) = (cell)(u32)*ipp;
+        *ipp = (cell *)(u32)rpop();     /* and the defining word is done */
+        break;
+    }
+    case P_CREATE:
+        if (!next_word()) {
+            error("name expected", 0, 0);
+            break;
+        }
+        if (header(word_start, word_len, 0)) {
+            comma(P_DOCREATE);
+            comma(0);
+        }
+        break;
+    case P_TOBODY:
+        a = pop();
+        if (addr_ok(a, 8, 4) && *(cell *)(u32)a == P_DOCREATE)
+            push(a + 8);
+        else
+            error("not a CREATEd word", 0, 0);
+        break;
+    case P_CHAR:
+        if (next_word())
+            push((u8)word_start[0]);
+        else
+            error("CHAR of what?", 0, 0);
+        break;
+    case P_ACCEPT: {                    /* ( addr max -- n ) a typed line */
+        cell max = pop(), addr = pop();
+        int n = 0, c;
+
+        if (max < 0 || !addr_ok(addr, (u32)max, 0))
+            break;
+        for (;;) {
+            gfx_box(16 + (con_col() + 2) * 8 - 16, con_row() * 16 + 1, 8, 14,
+                    RGB(255, 190, 90));
+            while (!(c = input_getchar())) {
+                vi_wait_vblank();
+                input_poll();
+                kernel_status_bar();
+            }
+            gfx_box(16 + (con_col() + 2) * 8 - 16, con_row() * 16 + 1, 8, 14,
+                    RGB(10, 14, 30));
+            if (c == '\n' || c == KEY_ESC)
+                break;
+            if (c == '\b') {
+                if (n > 0 && con_col() > 0) {
+                    n--;
+                    con_at(con_row(), con_col() - 1);
+                    con_putc(' ');
+                    con_at(con_row(), con_col() - 1);
+                }
+                continue;
+            }
+            if (c >= ' ' && c <= '~' && n < max) {
+                ((char *)(u32)addr)[n++] = (char)c;
+                con_putc((char)c);
+            }
+        }
+        con_putc('\n');
+        push(n);
+        break;
+    }
     case P_I:       push(rstack[rsp - 1]); break;
     case P_UNLOOP:  (void)rpop(); (void)rpop(); break;
     case P_J:       push(rstack[rsp - 3]); break;
-    case P_LEAVE:   rpop(); rpush(0x7FFFFFFF); break;
+    case P_LEAVE:                       /* out of the loop, now */
+        (void)rpop();
+        (void)rpop();
+        *ipp = (cell *)(u32)**ipp;
+        break;
 
     case P_DUP:     a = pop(); push(a); push(a); break;
     case P_2DUP:    b = pop(); a = pop(); push(a); push(b); push(a); push(b);
@@ -741,6 +899,154 @@ static void prim(int code, cell xt, cell **ipp)
     }
     case P_VSYNC:   vi_wait_vblank(); break;
 
+    /* ------------------------------------------------------ files
+     *
+     * Names are (c-addr u) pairs, as S" and PARSE-NAME leave them.  An ior
+     * is 0 for success and a negative code otherwise; .IOR says what it
+     * means. */
+    case P_PARSENAME:
+        if (next_word()) {
+            push((cell)(u32)word_start);
+            push(word_len);
+        } else {
+            push((cell)(u32)in_p);
+            push(0);
+        }
+        break;
+    case P_LOADFILE: {                  /* ( addr max c-addr u -- n ior ) */
+        cell u = pop(), name = pop(), max = pop(), addr = pop();
+        int n;
+
+        if (aborted || !name_ok(name, u) || max < 0 ||
+            !addr_ok(addr, (u32)max, 0))
+            break;
+        n = fs_read((const char *)(u32)name, (int)u, (char *)(u32)addr,
+                    (int)max);
+        push(n < 0 ? 0 : n);
+        push(n < 0 ? n : 0);
+        break;
+    }
+    case P_SAVEFILE: {                  /* ( addr n c-addr u -- ior ) */
+        cell u = pop(), name = pop(), n = pop(), addr = pop();
+
+        if (aborted || !name_ok(name, u) || n < 0 ||
+            !addr_ok(addr, (u32)n, 0))
+            break;
+        push(fs_write((const char *)(u32)name, (int)u,
+                      (const char *)(u32)addr, (int)n));
+        break;
+    }
+    case P_DELFILE: {                   /* ( c-addr u -- ior ) */
+        cell u = pop(), name = pop();
+
+        if (!aborted && name_ok(name, u))
+            push(fs_delete((const char *)(u32)name, (int)u));
+        break;
+    }
+    case P_RENFILE: {                   /* ( c-addr1 u1 c-addr2 u2 -- ior ) */
+        cell u2 = pop(), n2 = pop(), u1 = pop(), n1 = pop();
+
+        if (!aborted && name_ok(n1, u1) && name_ok(n2, u2))
+            push(fs_rename((const char *)(u32)n1, (int)u1,
+                           (const char *)(u32)n2, (int)u2));
+        break;
+    }
+    case P_FILEQ: {                     /* ( c-addr u -- size vol -1 | 0 ) */
+        cell u = pop(), name = pop();
+        int vol, size;
+
+        if (aborted || !name_ok(name, u))
+            break;
+        size = fs_stat((const char *)(u32)name, (int)u, &vol);
+        if (size >= 0) {
+            push(size);
+            push(vol);
+            push(-1);
+        } else {
+            push(0);
+        }
+        break;
+    }
+    case P_NFILES:  push(fs_count()); break;
+    case P_FILENTH: {                   /* ( i -- c-addr u size vol ) */
+        static char name[FS_NAME_MAX + 1];
+        int size = 0, vol = 0, n = fs_entry((int)pop(), name, &size, &vol);
+
+        if (n < 0) {
+            error("no such directory entry", 0, 0);
+            break;
+        }
+        push((cell)(u32)name);
+        push(n);
+        push(size);
+        push(vol);
+        break;
+    }
+    case P_DISKFREE:  push(fs_free_bytes()); break;
+    case P_DISKSTATE: push(fs_state()); break;
+    case P_FORMAT:    push(fs_format()); break;
+    case P_MOUNT:     push(fs_mount()); break;
+    case P_DOTIOR:    a = pop(); if (a) con_printf("%s\n", fs_error((int)a)); break;
+    case P_DOTVOL:    con_puts(fs_volume_name((int)pop())); break;
+    case P_UNUSED:    push((cell)(u32)(dict_end - dp)); break;
+    case P_KEY: {                       /* ( -- c ) wait for a key */
+        int c;
+
+        while (!(c = input_getchar())) {
+            vi_wait_vblank();
+            input_poll();
+            kernel_status_bar();
+        }
+        push(c);
+        break;
+    }
+    case P_INKEY:   input_poll(); push(input_getchar()); break;
+    case P_MS: {                        /* ( n -- ) in frames, a sixtieth */
+        u32 until = vi_frames() + ((u32)pop() * 60u + 999u) / 1000u;
+
+        while ((s32)(vi_frames() - until) < 0)
+            vi_wait_vblank();
+        break;
+    }
+    case P_CMOVE: {                     /* ( from to n -- ) */
+        cell n = pop(), to = pop(), from = pop();
+
+        if (n <= 0 || !addr_ok(from, (u32)n, 0) || !addr_ok(to, (u32)n, 0))
+            break;
+        {
+            const u8 *f = (const u8 *)(u32)from;
+            u8 *t = (u8 *)(u32)to;
+
+            if (t < f)
+                while (n--) *t++ = *f++;
+            else
+                while (n--) t[n] = f[n];
+        }
+        break;
+    }
+    case P_BEEP: {                      /* ( hz ms -- ) queue a note */
+        cell ms = pop(), hz = pop();
+
+        while (!aborted && !audio_note((int)hz, (int)ms))
+            vi_wait_vblank();           /* the queue is full: let it drain */
+        break;
+    }
+    case P_FINDNAME: {                  /* ( c-addr u -- xt | 0 ) */
+        cell u = pop(), a = pop();
+
+        if (!aborted && u > 0 && u <= NAME_MAX && addr_ok(a, (u32)u, 0))
+            push(find((const char *)(u32)a, (int)u, 0));
+        else if (!aborted)
+            push(0);
+        break;
+    }
+    case P_QUIET:    audio_quiet(); break;
+    case P_SOUNDING: push(audio_busy() ? -1 : 0); break;
+    case P_VOLUME:   audio_volume((int)pop()); break;
+    case P_INCLUDE: case P_EDIT: case P_RUN:
+        error("INCLUDE, EDIT and RUN are typed at the prompt", 0, 0);
+        break;
+
     default:
         error("unimplemented primitive", 0, 0);
         break;
@@ -786,8 +1092,12 @@ static cell xt_of(const char *name)
 }
 
 /* Shared by ." and S": read the string up to the closing quote, then either
- * compile it inline after its runtime, or act on it now. */
-static char strpad[256];
+ * compile it inline after its runtime, or act on it now.  S" at the prompt
+ * rotates through four buffers, so S" OLD" S" NEW" RENAME-FILE gets two
+ * different names. */
+#define STRPADS 4
+static char strpads[STRPADS][256];
+static int strpad_next;
 
 static void compile_string(int runtime)
 {
@@ -814,8 +1124,11 @@ static void compile_string(int runtime)
         return;
     }
     if (runtime == P_SQRUN) {
-        if (len > (int)sizeof(strpad))
-            len = (int)sizeof(strpad);
+        char *strpad = strpads[strpad_next];
+
+        strpad_next = (strpad_next + 1) % STRPADS;
+        if (len > 256)
+            len = 256;
         for (i = 0; i < len; i++)
             strpad[i] = s[i];
         push((cell)(u32)strpad);
@@ -824,6 +1137,18 @@ static void compile_string(int runtime)
     }
     for (i = 0; i < len; i++)
         con_putc(s[i]);
+}
+
+/* The loop just closed: its LEAVEs jump here. */
+static void resolve_leaves(void)
+{
+    while (nleaves > 0) {
+        cell slot = leaves[--nleaves];
+
+        if (!slot)
+            break;
+        *(cell *)(u32)slot = (cell)(u32)dp;
+    }
 }
 
 static void do_immediate_word(int code)
@@ -848,6 +1173,7 @@ static void do_immediate_word(int code)
         def_prev_latest = prev;
         def_header = h;
         csp = 0;
+        nleaves = 0;
         state = 1;
         break;
     }
@@ -938,11 +1264,11 @@ static void do_immediate_word(int code)
         comma(t);
         break;
     }
-    case P_AGAIN: {
-        cell t = cpop();
+    case P_AGAIN: {                     /* a loop with no way out but the */
+        cell t = cpop();                /* break key: so it looks for it */
         if (aborted)
             break;
-        comma(xt_of("(BRANCH)"));
+        comma(xt_of("(AGAIN)"));
         comma(t);
         break;
     }
@@ -963,13 +1289,120 @@ static void do_immediate_word(int code)
     case P_DOIMM:
         comma(xt_of("(DO)"));
         cpush((cell)(u32)dp);
+        if (nleaves < LEAVES_MAX)
+            leaves[nleaves++] = 0;
         break;
     case P_LOOPIMM: {
         cell t = cpop();
         if (aborted)
             break;
+        if (t == CS_QDO) {              /* ?DO: its skip lands after us */
+            cell target = cpop(), slot = cpop();
+
+            comma(xt_of("(LOOP)"));
+            comma(target);
+            *(cell *)(u32)slot = (cell)(u32)dp;
+            resolve_leaves();
+            break;
+        }
         comma(xt_of("(LOOP)"));
         comma(t);
+        resolve_leaves();
+        break;
+    }
+    case P_QDOIMM:                      /* like DO, with a way round */
+        comma(xt_of("(?DO)"));
+        cpush((cell)(u32)dp);           /* the skip, resolved by LOOP */
+        comma(0);
+        cpush((cell)(u32)dp);
+        cpush(CS_QDO);
+        if (nleaves < LEAVES_MAX)
+            leaves[nleaves++] = 0;
+        break;
+    case P_LEAVEIMM:
+        if (!nleaves) {
+            error("LEAVE outside DO ... LOOP", 0, 0);
+            break;
+        }
+        comma(xt_of("(LEAVE)"));
+        if (nleaves >= LEAVES_MAX) {
+            error("too many LEAVEs", 0, 0);
+            break;
+        }
+        leaves[nleaves++] = (cell)(u32)dp;
+        comma(0);
+        break;
+    case P_PLOOPIMM: {
+        cell t = cpop();
+
+        if (aborted)
+            break;
+        if (t == CS_QDO) {
+            cell target = cpop(), slot = cpop();
+
+            comma(xt_of("(+LOOP)"));
+            comma(target);
+            *(cell *)(u32)slot = (cell)(u32)dp;
+        } else {
+            comma(xt_of("(+LOOP)"));
+            comma(t);
+        }
+        resolve_leaves();
+        break;
+    }
+    case P_DOES:
+        if (!state) {
+            error("DOES> belongs in a definition", 0, 0);
+            break;
+        }
+        comma(xt_of("(DOES>)"));
+        break;
+    case P_RECURSE:
+        if (!state || !def_header)
+            error("RECURSE belongs in a definition", 0, 0);
+        else
+            comma(name_to_xt(def_header));
+        break;
+    case P_BRCHAR:
+        if (!next_word()) {
+            error("[CHAR] of what?", 0, 0);
+            break;
+        }
+        comma(xt_of("(LIT)"));
+        comma((u8)word_start[0]);
+        break;
+    case P_CASE:
+        cpush(CS_CASE);
+        break;
+    case P_OF:                          /* OVER = IF DROP */
+        comma(xt_of("OVER"));
+        comma(xt_of("="));
+        comma(xt_of("(0BRANCH)"));
+        cpush((cell)(u32)dp);
+        comma(0);
+        comma(xt_of("DROP"));
+        break;
+    case P_ENDOF: {                     /* ELSE, keeping the exits stacked */
+        cell slot = cpop();
+
+        if (aborted)
+            break;
+        comma(xt_of("(BRANCH)"));
+        {
+            cell exit_slot = (cell)(u32)dp;
+
+            comma(0);
+            *(cell *)(u32)slot = (cell)(u32)dp;
+            cpush(exit_slot);
+        }
+        break;
+    }
+    case P_ENDCASE: {
+        cell slot;
+
+        comma(xt_of("DROP"));
+        while (!aborted && (slot = cpop()) != CS_CASE && !aborted)
+            *(cell *)(u32)slot = (cell)(u32)dp;
         break;
     }
     case P_LBRACK:
@@ -1012,6 +1445,14 @@ static void do_immediate_word(int code)
         break;
     case P_SQUOTE:
         compile_string(P_SQRUN);
+        break;
+    case P_DOTPAREN:                    /* .( says it now, even compiling */
+        if (in_p < in_end && *in_p == ' ')
+            in_p++;
+        while (in_p < in_end && *in_p != ')')
+            con_putc(*in_p++);
+        if (in_p < in_end)
+            in_p++;
         break;
     case P_PAREN:
         while (in_p < in_end && *in_p != ')')
@@ -1132,9 +1573,32 @@ static void do_see(void)
             ip += (len + 3) / 4;
             continue;
         }
-        if (code == P_BRANCH || code == P_ZBRANCH) {
-            con_puts(code == P_BRANCH ? "(BRANCH)->" : "(0BRANCH)->");
+        if (code == P_BRANCH || code == P_ZBRANCH || code == P_AGAINBR) {
+            con_puts(code == P_BRANCH ? "(BRANCH)->" : code == P_AGAINBR
+                     ? "(AGAIN)->" : "(0BRANCH)->");
             con_printf("%x ", (u32)*ip++);
+            continue;
+        }
+        if (code == P_LOOP || code == P_PLOOP || code == P_QDO ||
+            code == P_LEAVE) {
+            con_puts(code == P_LOOP ? "LOOP " : code == P_PLOOP ? "+LOOP " :
+                     code == P_QDO ? "?DO " : "LEAVE ");
+            ip++;                       /* the target */
+            continue;
+        }
+        if (code == P_SQRUN) {
+            cell len = *ip++;
+            const char *s = (const char *)(u32)ip;
+            int i;
+            con_puts("S\" ");
+            for (i = 0; i < len; i++)
+                con_putc(s[i]);
+            con_puts("\" ");
+            ip += (len + 3) / 4;
+            continue;
+        }
+        if (code == P_PDOES) {
+            con_puts("DOES> ");
             continue;
         }
         if (th)
@@ -1168,6 +1632,83 @@ static void do_dump(void)
     }
 }
 
+/* ------------------------------------------------------ INCLUDE / EDIT
+ *
+ * These two run other source, so they are only allowed where WORDS and SEE
+ * are: at the top of a line, not inside a definition.  Nested source is
+ * then just more lines, and an error in it cannot unwind the return stack
+ * of a word that was halfway through running.
+ */
+#define INCLUDE_DEPTH 3
+static char include_buf[INCLUDE_DEPTH][FS_FILE_MAX + 1];
+static int include_depth;
+static int line_errors;
+
+int forth_include(const char *name, int len)
+{
+    char *buf;
+    int n, before;
+
+    if (include_depth >= INCLUDE_DEPTH) {
+        error("files include each other too deeply", name, len);
+        return 0;
+    }
+    buf = include_buf[include_depth];
+    n = fs_read(name, len, buf, FS_FILE_MAX);
+    if (n < 0) {
+        error(fs_error(n), name, len);
+        return 0;
+    }
+    buf[n] = 0;
+    include_depth++;
+    before = line_errors;
+    forth_eval_lines(buf);
+    include_depth--;
+    if (line_errors != before) {
+        error("errors in", name, len);
+        return 0;
+    }
+    aborted = 0;
+    return 1;
+}
+
+static void do_file_command(int code)
+{
+    char name[FS_NAME_MAX + 1];
+    int i, len;
+
+    if (!next_word()) {
+        error(code == P_EDIT ? "EDIT what? EDIT NAME.FTH" :
+              code == P_RUN  ? "RUN what? RUN NAME.FTH" :
+                               "INCLUDE what? INCLUDE NAME.FTH", 0, 0);
+        return;
+    }
+    if (!fs_name_ok(word_start, word_len)) {
+        error(fs_error(FS_EBADNAME), word_start, word_len);
+        return;
+    }
+    len = word_len;
+    for (i = 0; i < len; i++)
+        name[i] = word_start[i];
+    name[len] = 0;
+    if (code == P_INCLUDE) {
+        forth_include(name, len);
+        return;
+    }
+    if (code == P_RUN) {
+        /* An app gets its window; the prompt comes back when it closes. */
+        if (desktop_open_file(name))
+            repl_repaint();
+        else
+            forth_include(name, len);
+        return;
+    }
+    i = edit_file(name, len);
+    repl_repaint();
+    if (i == EDIT_RUN)
+        forth_include(name, len);
+}
+
 /* --------------------------------------------------- outer interpreter */
 
 static int is_immediate_code(int code)
@@ -1179,6 +1720,9 @@ static int is_immediate_code(int code)
     case P_DOSTR: case P_PAREN: case P_BACKSLASH: case P_TICK:
     case P_DOIMM: case P_LOOPIMM: case P_FORGET:
     case P_LBRACK: case P_RBRACK: case P_SQUOTE:
+    case P_QDOIMM: case P_PLOOPIMM: case P_DOES: case P_RECURSE:
+    case P_LEAVEIMM: case P_DOTPAREN:
+    case P_BRCHAR: case P_CASE: case P_OF: case P_ENDOF: case P_ENDCASE:
         return 1;
     default:
         return 0;
@@ -1189,6 +1733,8 @@ void forth_eval(const char *src)
 {
     const char *save_p = in_p, *save_end = in_end;
 
+    if (!include_depth)
+        interrupted = 0;
     in_p = src;
     in_end = src;
     while (*in_end)
@@ -1217,6 +1763,11 @@ void forth_eval(const char *src)
             }
             if (code == P_DUMP && !state) {
                 do_dump();
+                continue;
+            }
+            if ((code == P_INCLUDE || code == P_EDIT || code == P_RUN) &&
+                !state) {
+                do_file_command(code);
                 continue;
             }
             if (state && !(flags & IMMEDIATE))
@@ -1263,6 +1814,11 @@ void forth_eval_lines(const char *src)
         if (aborted) {
             u16 save = con_get_color();
 
+            line_errors++;
+            if (interrupted) {          /* the break key stops it all */
+                con_color(save);
+                return;
+            }
             con_color(RGB(150, 110, 110));
             con_puts("   in: ");
             con_puts(buf);
@@ -1289,9 +1845,11 @@ static const struct primdef prims[] = {
     { "EXIT", P_EXIT, 0 }, { "(LIT)", P_LIT, 0 }, { "(.\")", P_SLIT, 0 },
     { ".\"", P_DOSTR, IMMEDIATE },
     { "(BRANCH)", P_BRANCH, 0 }, { "(0BRANCH)", P_ZBRANCH, 0 },
+    { "(AGAIN)", P_AGAINBR, 0 },
     { "(DO)", P_DO, 0 }, { "(LOOP)", P_LOOP, 0 },
     { "DO", P_DOIMM, IMMEDIATE }, { "LOOP", P_LOOPIMM, IMMEDIATE },
     { "I", P_I, 0 }, { "J", P_J, 0 }, { "UNLOOP", P_UNLOOP, 0 },
+    { "(LEAVE)", P_LEAVE, 0 }, { "LEAVE", P_LEAVEIMM, IMMEDIATE },
     { "DUP", P_DUP, 0 }, { "?DUP", P_QDUP, 0 }, { "DROP", P_DROP, 0 },
     { "2DUP", P_2DUP, 0 }, { "2DROP", P_2DROP, 0 }, { "2SWAP", P_2SWAP, 0 },
     { "SWAP", P_SWAP, 0 }, { "OVER", P_OVER, 0 }, { "ROT", P_ROT, 0 },
@@ -1326,7 +1884,7 @@ static const struct primdef prims[] = {
     { "THEN", P_THEN, IMMEDIATE }, { "BEGIN", P_BEGIN, IMMEDIATE },
     { "UNTIL", P_UNTIL, IMMEDIATE }, { "AGAIN", P_AGAIN, IMMEDIATE },
     { "WHILE", P_WHILE, IMMEDIATE }, { "REPEAT", P_REPEAT, IMMEDIATE },
-    { "(", P_PAREN, IMMEDIATE }, { "\\", P_BACKSLASH, IMMEDIATE },
+    { "(", P_PAREN, IMMEDIATE }, { ".(", P_DOTPAREN, IMMEDIATE }, { "\\", P_BACKSLASH, IMMEDIATE },
     { "'", P_TICK, IMMEDIATE }, { "EXECUTE", P_EXECUTE, 0 },
     { "WORDS", P_WORDS, 0 }, { "SEE", P_SEE, 0 }, { "DUMP", P_DUMP, 0 },
     { "DECIMAL", P_DECIMAL, 0 }, { "HEX", P_HEX, 0 }, { "BASE", P_BASE, 0 },
@@ -1351,6 +1909,26 @@ static const struct primdef prims[] = {
     { "HIDE-CURSOR", P_HIDECUR, 0 },
     { "CLIP", P_CLIP, 0 }, { "NOCLIP", P_NOCLIP, 0 },
     { "SET-CANVAS", P_SETCANVAS, 0 },
+    { "PARSE-NAME", P_PARSENAME, 0 }, { "INCLUDE", P_INCLUDE, 0 },
+    { "EDIT", P_EDIT, 0 }, { "LOAD-FILE", P_LOADFILE, 0 },
+    { "SAVE-FILE", P_SAVEFILE, 0 }, { "DELETE-FILE", P_DELFILE, 0 },
+    { "RENAME-FILE", P_RENFILE, 0 }, { "FILE?", P_FILEQ, 0 },
+    { "#FILES", P_NFILES, 0 }, { "FILE#", P_FILENTH, 0 },
+    { "DISK-FREE", P_DISKFREE, 0 }, { "DISK-STATE", P_DISKSTATE, 0 },
+    { "(FORMAT)", P_FORMAT, 0 }, { "MOUNT", P_MOUNT, 0 },
+    { ".IOR", P_DOTIOR, 0 }, { ".VOL", P_DOTVOL, 0 },
+    { "UNUSED", P_UNUSED, 0 }, { "KEY", P_KEY, 0 }, { "INKEY", P_INKEY, 0 },
+    { "MS", P_MS, 0 }, { "CMOVE", P_CMOVE, 0 }, { "RUN", P_RUN, 0 },
+    { "CREATE", P_CREATE, 0 }, { "(DOES>)", P_PDOES, 0 },
+    { "DOES>", P_DOES, IMMEDIATE }, { ">BODY", P_TOBODY, 0 },
+    { "(?DO)", P_QDO, 0 }, { "?DO", P_QDOIMM, IMMEDIATE },
+    { "(+LOOP)", P_PLOOP, 0 }, { "+LOOP", P_PLOOPIMM, IMMEDIATE },
+    { "RECURSE", P_RECURSE, IMMEDIATE }, { "CHAR", P_CHAR, 0 },
+    { "[CHAR]", P_BRCHAR, IMMEDIATE }, { "CASE", P_CASE, IMMEDIATE },
+    { "OF", P_OF, IMMEDIATE }, { "ENDOF", P_ENDOF, IMMEDIATE },
+    { "ENDCASE", P_ENDCASE, IMMEDIATE }, { "ACCEPT", P_ACCEPT, 0 },
+    { "FIND-NAME", P_FINDNAME, 0 }, { "BEEP", P_BEEP, 0 }, { "QUIET", P_QUIET, 0 },
+    { "SOUNDING?", P_SOUNDING, 0 }, { "VOLUME", P_VOLUME, 0 },
 };
 
 void forth_init(void)
@@ -1400,6 +1978,7 @@ int forth_call(const char *name)
     if (!xt)
         return 0;
     aborted = 0;
+    interrupted = 0;
     forth_execute(xt);
     return !aborted;
 }
@@ -1413,6 +1992,7 @@ cell *fs_prim(cell *stack, cell code)
 {
     cell *ip = 0;
 
+    tick();
     dsp = (int)(stack - dstack);
     prim((int)code, 0, &ip);
     return &dstack[dsp];
@@ -1421,6 +2001,7 @@ cell *fs_prim(cell *stack, cell code)
 cell *fs_call(cell *stack, cell xt)
 {
     dsp = (int)(stack - dstack);
+    tick();
     forth_execute(xt);
     return &dstack[dsp];
 }
@@ -1453,17 +2034,28 @@ cell *fs_index(cell *stack, cell level)
     return &dstack[dsp];
 }
 
-int fs_loop(void)
+/* LOOP in compiled code.  Called through the fs_loop wrapper in entry.S,
+ * which keeps $t8 -- compiled code's stack pointer -- safe across it. */
+int fs_loop_c(void)
 {
     cell index = rpop(), limit = rpop();
 
     index++;
-    if (index < limit) {
+    tick();
+    if (index < limit && !aborted) {
         rpush(limit);
         rpush(index);
         return 1;
     }
     return 0;
+}
+
+/* What compiled AGAIN calls on its way round. */
+cell *fs_tick(cell *stack)
+{
+    dsp = (int)(stack - dstack);
+    tick();
+    return &dstack[dsp];
 }
 
 cell *fs_bad_stack(cell *stack)

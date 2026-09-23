@@ -50,7 +50,9 @@ class N64:
         # Four joybus channels.  A BlueRetro adapter can present a
         # controller, a mouse or a keyboard on any of them, so this can too.
         self.pads = [
-            {"kind": "pad", "buttons": 0, "x": 0, "y": 0},
+            # with a Controller Pak in it: 32 KiB, blank
+            {"kind": "pad", "buttons": 0, "x": 0, "y": 0,
+             "pak": bytearray(32768)},
             {"kind": "mouse", "buttons": 0, "dx": 0, "dy": 0},
             {"kind": "keyboard", "keys": []},
             None,
@@ -95,6 +97,8 @@ class N64:
             idx = (p - 0x04600000) >> 2
             return 0 if idx == 4 else self.pi[idx]  # PI_STATUS: never busy
         if 0x04800000 <= p < 0x04800020:            # SI: never busy
+            return 0
+        if 0x04500000 <= p < 0x04500018:            # AI: never full
             return 0
         if 0x04100000 <= p < 0x04100020:            # DPC: never busy
             idx = (p - 0x04100000) >> 2
@@ -146,6 +150,10 @@ class N64:
             elif idx == 1:
                 self.dp["end"] = val
                 self.rdp_run()
+            return
+        if 0x04500000 <= p < 0x04500018:            # AI: buffers counted
+            if p == 0x04500004:                     # and dropped
+                self.audio_buffers = getattr(self, "audio_buffers", 0) + 1
             return
         if 0x04800000 <= p < 0x04800020:
             idx = (p - 0x04800000) >> 2
@@ -241,10 +249,14 @@ class N64:
             if pad is None:
                 b[i + 1] |= 0x80                    # nothing on this channel
             elif op in (0x00, 0xFF) and rx >= 3:    # identify
-                ident = {"pad": (0x05, 0x00, 0x02),
+                ident = {"pad": (0x05, 0x00,
+                                 0x01 if pad.get("pak") is not None else 0x02),
                          "mouse": (0x02, 0x00, 0x00),
                          "keyboard": (0x00, 0x02, 0x00)}[kind]
                 b[resp + 0], b[resp + 1], b[resp + 2] = ident
+            elif op in (0x02, 0x03) and kind == "pad" and \
+                    pad.get("pak") is not None:
+                self._pak(pad["pak"], op, i, resp)
             elif op == 0x01 and kind == "pad" and rx >= 4:
                 b[resp + 0] = (pad["buttons"] >> 8) & 0xFF
                 b[resp + 1] = pad["buttons"] & 0xFF
@@ -266,6 +278,49 @@ class N64:
                 b[i + 1] |= 0x40                    # unsupported: time out
             i = resp + rx
             channel += 1
+
+    # ------------------------------------------------ the Controller Pak
+    @staticmethod
+    def address_crc(addr):
+        table = (0, 0, 0, 0, 0, 0x15, 0x1F, 0x0B, 0x16, 0x19, 0x07, 0x0E,
+                 0x1C, 0x0D, 0x1A, 0x01)
+        crc = 0
+        for i in range(15, 4, -1):
+            if (addr >> i) & 1:
+                crc ^= table[i]
+        return crc & 0x1F
+
+    @staticmethod
+    def data_crc(data):
+        crc = 0
+        for i in range(33):
+            for j in range(7, -1, -1):
+                top = crc & 0x80
+                crc = (crc << 1) & 0xFF
+                if i < 32 and (data[i] >> j) & 1:
+                    crc |= 1
+                if top:
+                    crc ^= 0x85
+        return crc
+
+    def _pak(self, pak, op, i, resp):
+        """32 bytes in or out, with both CRCs done as the controller does,
+        so a kernel that gets either wrong sees the transfer fail."""
+        b = self.pif
+        word = (b[i + 3] << 8) | b[i + 4]
+        addr = word & 0xFFE0
+        good = self.address_crc(addr) == (word & 0x1F)
+        if op == 0x02:
+            data = bytes(pak[addr:addr + 32]) if addr < 0x8000 else bytes(32)
+            b[resp:resp + 32] = data
+            crc = self.data_crc(data)
+            b[resp + 32] = crc if good else crc ^ 0xFF
+        else:
+            data = bytes(b[i + 5:i + 37])
+            if good and addr < 0x8000:
+                pak[addr:addr + 32] = data
+            crc = self.data_crc(data)
+            b[resp] = crc if good else crc ^ 0xFF
 
     def buttons(self, mask, down=True, pad=0):
         p = self.pads[pad]

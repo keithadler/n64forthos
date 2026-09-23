@@ -2,13 +2,16 @@
 
 A Forth operating system for the Nintendo 64. It boots from its own
 cartridge, brings up 640×480 in sixteen bits a pixel, compiles the part of
-itself that is written in Forth, and puts a desktop on the screen.
+itself that is written in Forth, and puts a desktop on the screen. It keeps
+your files on the Controller Pak, has an editor to write programs in and a
+shell to run them from, and runs your `BOOT.FTH` when it starts.
 
 ![the desktop](docs/img/desktop.png)
 
-Seven things sit on that desktop. Four of them are **the Forth source you are
-looking at**: the window shows the code, and the button beside it runs that
-code into the canvas next to it.
+Nine things sit on that desktop. **Files** is everything on the Controller
+Pak and in the ROM, to edit, run or delete. Four of them are **the Forth
+source you are looking at**: the window shows the code, and the button beside
+it runs that code into the canvas next to it.
 
 ![the Mandelbrot app](docs/img/app-mandel.png)
 ![the Cornell box](docs/img/app-cornell.png)
@@ -19,18 +22,116 @@ a Forth word once a frame.
 
 ![the window manager](docs/img/wm.png)
 
-And the console is a real Forth prompt. With nothing but a controller you
-type on an on-screen keyboard; with a [BlueRetro](https://blueretro.io)
-adapter the N64 takes a Bluetooth **mouse and keyboard**, and the desktop
-grows a pointer while the prompt takes dictation.
+And the console is a real Forth prompt, and a shell. With nothing but a
+controller you type on an on-screen keyboard; with a
+[BlueRetro](https://blueretro.io) adapter the N64 takes a Bluetooth **mouse
+and keyboard**, and the desktop grows a pointer while the prompt takes the
+whole screen.
 
 ```bash
 make            # build/n64forthos.z64, a 64 MiB cartridge image
 make serve      # http://127.0.0.1:8795 -- run it in a browser, with your
                 # own mouse and keyboard wired into it
-make test       # boot it headless: 139 Forth assertions and 35 system checks
+make ostest     # the file system, editor and shell, headless: a minute
+make test       # all of it: 208 Forth assertions and the system checks
 make gui        # run it in mupen64plus
 ```
+
+## An operating system, not only a language
+
+**Files that outlive the power.** The only writable storage a stock N64 has
+is the Controller Pak: 32 KiB of battery-backed memory in the back of the
+controller, reached over the same serial bus as the buttons, 32 bytes at a
+time, each transfer checked by two CRCs. [`src/pak.c`](src/pak.c) speaks that
+protocol and [`src/fs.c`](src/fs.c) puts a file system on it: a table of 128
+pages, a directory of 24 files, and saves that write the new copy into free
+space before the directory points at it, so pulling the pak mid-save loses
+the new version rather than the old one. With no pak in the controller the
+same file system runs on a RAM disk, and every screen that saves says so.
+
+The cartridge brings its own files -- the applications' source, a README, a
+starter program -- on a read-only **ROM** volume. Names are looked up on the
+pak first, so saving `MANDEL.FTH` after editing it gives you your own
+Mandelbrot from the desktop, and deleting it gives you the original back.
+
+Paks can be swapped with the power on. Before it trusts its copy of the
+directory, the kernel reads the pak's header block and compares the
+generation every save bumps; a different pak, or one written elsewhere, is
+read again rather than written over, and a pulled pak drops the system back
+to the RAM disk.
+
+A pak with game saves on it is not taken over quietly: this is the system's
+own format, not Nintendo's note table, and `FORMAT` explains that it erases
+the saves before `ERASE-PAK` does it. A pak that is entirely blank is
+formatted without asking, since there is nothing on it to lose.
+
+![Files](docs/img/files.png)
+
+**An editor.** [`src/edit.c`](src/edit.c) is a full-screen text editor with
+line numbers, the arrows, Home/End/PgUp/PgDn, auto-indent, a click to place
+the cursor, ^K to cut lines and ^U to put them back somewhere else, and ^F to
+find (^G for the next). ^S saves, ^R saves and runs, Esc leaves (asking
+first if there are changes). Without a keyboard it brings up the on-screen
+one and the C buttons move the cursor.
+
+![the editor](docs/img/editor.png)
+
+**A shell, written in Forth.** `DIR CAT EDIT RUN INCLUDE DEL REN COPY FORMAT
+MEM HELP` are words in [`src/system.fth`](src/system.fth) on top of kernel
+words any program can use -- `LOAD-FILE SAVE-FILE DELETE-FILE RENAME-FILE
+FILE? #FILES FILE#`, listed in [docs/WORDS.md](docs/WORDS.md). The prompt
+takes the whole screen when there is a keyboard, keeps a history (up and
+down), and gives way to the on-screen keyboard with R.
+
+![the shell](docs/img/shell.png)
+
+**Files, on the desktop.** The Files window lists both volumes with sizes and
+free space: A edits, START runs, Z deletes (twice, to be sure), R starts a
+new file. Running a file does what its contents ask for: one that defines
+`ROWS` and `ROW` opens as an application in a window with its source beside
+it, one that defines `FRAME` takes the screen, and anything else is included
+at the prompt.
+
+**Several programs at once.** **Tasks** ([`src/apps/tasks.fth`](src/apps/tasks.fth))
+includes the window manager and then the Mandelbrot, Life and Navier-Stokes
+files -- unchanged, the same ones the desktop opens one at a time -- and runs
+all three side by side, each frame giving every window the next row of its
+picture. Three apps that each define `ROW`, `START` and `NEXT` share one
+dictionary because Forth binds a call when it compiles it: the moment a file
+is in, its `ROW` is the newest `ROW`, and that is the one captured (with
+`FIND-NAME`) before the next file can shadow it.
+
+![three programs at once](docs/img/tasks.png)
+
+**Programs that keep their data.** [`src/apps/sketch.fth`](src/apps/sketch.fth)
+is a paint program in 90 lines of Forth that saves its picture as
+`SKETCH.PIC` and finds it again after the power has been off.
+
+![SKETCH.FTH](docs/img/sketch.png)
+
+**Sound, in the background.** [`src/audio.c`](src/audio.c) drives the audio
+interface: `440 500 BEEP` queues half a second of A and returns at once, and
+the kernel synthesises the queue into three DMA buffers, topped up once a
+frame from the one loop everything passes through, so a tune plays on while
+you type, edit or run something else. `MUSIC.FTH` plays one; in the browser
+it comes out of Web Audio.
+
+**A fuller Forth.** `CREATE ... DOES>` for defining words, `?DO`, `+LOOP`,
+a `LEAVE` that leaves, `CASE OF ENDOF ENDCASE`, `RECURSE`, `CHAR`, and
+`ACCEPT` for programs that ask a question and wait for the answer.
+
+**A break key.** `: SPIN BEGIN AGAIN ; SPIN` no longer means reaching for
+the reset button: Esc or ^C, or START and Z on the controller, stops the
+program -- and the rest of the file it came from -- and hands back the
+prompt with the stacks cleared. Running code looks for the key every 32,768
+times round a loop or through a helper, which costs the renderers under 2%.
+The kernel reads only keyboards and controllers to do it, so a mouse's
+movement and the button edges an app is waiting for are left alone. What it
+cannot stop is a compiled loop made purely of inlined words (`BEGIN 1 DROP 0
+UNTIL`), which never calls anything that could look.
+
+**A boot script.** A `BOOT.FTH` on the pak runs at startup, before the
+desktop, with its output in the boot log.
 
 ---
 
@@ -127,14 +228,16 @@ runs until you stop it.
 
 ![Life](docs/img/app-life.png)
 
-**Console** — the prompt, on the on-screen keyboard or a real one.
+**Files** -- every file on the pak and in ROM; edit, run, delete, new.
+
+**Console** -- the prompt, on the on-screen keyboard or a real one.
 
 **Devices** — what answered on each of the four joybus channels, live, and
 the place to teach the system a real keyboard's key codes.
 
-Each application is a file in [src/apps](src/apps), compiled into the
-dictionary when its window opens and rolled back out of it when the window
-closes.
+Each application is a file -- in ROM from [src/apps](src/apps), or your own
+copy on the pak -- compiled into the dictionary when its window opens and
+rolled back out of it when the window closes.
 
 ![the Navier-Stokes demo](docs/img/app-navier.png)
 
@@ -224,11 +327,20 @@ straight through — so in the browser and in the tests, typing simply works.
 ## In a browser, with your own mouse and keyboard
 
 `make serve` puts it at <http://127.0.0.1:8795>, running in
-[`web/n64emu.js`](web/n64emu.js) — the same interpreter as the test harness,
+[`web/n64emu.js`](web/n64emu.js) -- the same interpreter as the test harness,
 ported to the browser precisely so the page can hand the OS real input: your
 mouse arrives as an N64 Mouse on channel 2 and your keyboard as a Randnet
 Keyboard on channel 3. Click the picture to give it the mouse; type at the
-prompt.
+prompt, or paste a whole program in.
+
+The controller has a Controller Pak in it, emulated down to both CRCs, and
+the page keeps its 32 KiB in the browser's local storage: a reload is a
+power cycle with the same pak still inserted. Below the picture you can
+eject it (the system falls back to a RAM disk), download it as a 32 KiB
+image, or load one. **files…** lists what is on it, each with a download
+button, and files dropped on the picture go onto the pak
+([`web/pakfs.js`](web/pakfs.js) speaks the same format), so programs move
+between the N64 and your computer either way.
 
 It runs at 35–60M instructions a second in a normal window, against the
 VR4300's 93.75M — half speed, and the desktop is idle most of the time
@@ -261,12 +373,28 @@ rather have an ELF.
 
 ## How it is tested
 
-`make test` boots two cartridges with no window and no console:
+`make ostest` drives the browser's emulator from Node
+([`tools/ostest.mjs`](tools/ostest.mjs)): it runs the Forth suite twice, on a
+Controller Pak and on the RAM disk; writes a program in the editor, saves it,
+runs it, power-cycles with the same pak and finds it again; checks that
+`BOOT.FTH` runs at power on; puts a file on the pak from outside and swaps
+in another pak mid-session, checking that neither is written over; works
+the shell (`COPY REN INCLUDE DEL`, the ROM
+refusing to be deleted, `FORMAT` warning first, the history); drives Files
+to run and delete; stops runaway loops with the break key; answers a program's `ACCEPT`; measures the pitch and
+length of queued notes from the samples the audio interface was given; and
+paints in `SKETCH.FTH` with the mouse, saves, powers off and checks the
+picture comes back pixel for pixel.
+
+`make test` runs that, then boots two cartridges on the Python emulator with
+no window and no console:
 
 **A test cartridge** runs [`test/tests.fth`](test/tests.fth) at boot and
 leaves the pass and fail counts in RDRAM, where
-[`tools/check.py`](tools/check.py) reads them back out of the emulator. 139
-assertions, thirteen of them deliberate errors — divide by zero, unaligned
+[`tools/check.py`](tools/check.py) reads them back out of the emulator. 208
+assertions -- including defining words, `?DO`, `+LOOP`, `LEAVE` and `CASE`, saving, loading, renaming and deleting files, a ROM
+file refusing to be deleted, a pak copy standing in for a ROM one, and
+`INCLUDE` of a file written by Forth -- thirteen of them deliberate errors — divide by zero, unaligned
 store, an `IF` that never closes, a dictionary overflow, a stack overflow —
 each followed by assertions that the system still computes and still has an
 empty stack.
@@ -313,14 +441,22 @@ src/kernel.c    bring-up, boot log, the handover to the desktop
 src/video.c     the video interface: 640x480, 16bpp, interlaced NTSC
 src/gfx.c       every routine that touches a pixel, including the pointer
 src/console.c   text in its own columns, with a status bar
-src/input.c     joybus: controllers, mice, keyboards
-src/repl.c      the prompt and the on-screen keyboard
+src/input.c     joybus: controllers, mice, keyboards, and the typeahead
+src/pak.c       the Controller Pak: 32-byte transfers and their CRCs
+src/audio.c     sound: a queue of notes, fed to the audio interface
+src/fs.c        the file system: ROM, and the pak (or a RAM disk)
+src/edit.c      the text editor
+src/files.c     the Files window
+src/osk.c       the on-screen keyboard
+src/repl.c      the prompt, with history
 src/desktop.c   the launcher, the application windows, the devices window
 src/forth.c     dictionary, inner interpreter, compiler, primitives
 src/system.fth  the part of the system written in Forth
-src/apps/*.fth  the applications, which are also their own source listing
+src/apps/*     the ROM volume: the applications, which are also their own
+                source listing, HELLO.FTH, SKETCH.FTH, MUSIC.FTH, README.TXT
 test/tests.fth  the test suite, also written in Forth
-tools/          font, boot source packer, cartridge builder, emulator, checks
+tools/          font, boot source packer, cartridge builder, emulator, checks;
+                web.mjs and ostest.mjs drive the browser's emulator from Node
 web/            the page, and the emulator ported to JavaScript
 ```
 
@@ -331,14 +467,19 @@ lld. There is no cross-gcc to build.
 
 Everything described above works, is tested, and is in this repository. The
 system boots, compiles itself, runs applications written in its own language,
-takes a mouse and a keyboard, and manages windows. Rendering is three to
+takes a mouse and a keyboard, manages windows, and keeps files: you can write
+a program on the machine, save it to the Controller Pak, turn the power off,
+and run it again tomorrow. Rendering is three to
 seven times faster than where it started, and the interface is no longer the
 part that costs anything: a full screen rebuild is about ten milliseconds,
 and an idle frame touches a few hundred pixels.
 
 Three things were deliberately left for later, and none of them is hiding:
 
-**A console has not seen it yet.** The boot block does not initialise RDRAM,
+**A console has not seen it yet**, and neither has a real Controller Pak.
+The pak protocol and both of its CRCs are implemented from the documented
+format and checked against two emulators written from the same documents,
+which is not the same as a pak. The boot block does not initialise RDRAM,
 and the PIF checksums it against the CIC — both solved by handing
 `make IPL3=...` a boot block that does the work.
 [docs/HARDWARE.md](docs/HARDWARE.md) is the guide for the day the hardware
@@ -351,9 +492,10 @@ It is the last large multiplier, and taking it would mean the applications
 stop being Forth you can read in the window beside the picture — which is why
 it was not taken.
 
-**The window manager is an application, not the shell.** Making it the shell
-— the launcher as a Forth window, applications opening as windows — is the
-obvious next step and a contained one.
+**The window manager is an application, not the shell.** Tasks shows it can
+host the applications -- they already run in its windows -- but the console,
+Files and the editor are still loops that own the screen, and making them
+windows is the step after.
 
 ## Licence
 

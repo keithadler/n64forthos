@@ -1,116 +1,78 @@
 /* repl.c -- the prompt.
  *
- * There is no keyboard port on an N64, so the keyboard is on the screen and
- * the controller drives it: the d-pad (or the stick) moves the highlight, A
- * types the key under it, B rubs out, Z is a space and START runs the line.
- *
- * The grid is uniform -- six rows of twelve -- which keeps the movement
- * arithmetic trivial and lets a test drive it by counting presses.  Keys
- * that repeat across neighbouring cells are drawn as one wide key, which is
- * how SPACE, BSP and ENTER get their width.
+ * Two layouts.  With only a controller, the keyboard is on the screen (see
+ * osk.c): the d-pad moves the highlight, A types the key under it, B rubs
+ * out, Z is a space and START runs the line, and the console keeps to the
+ * left of the screen above it.  With a real keyboard -- a Randnet, or a
+ * BlueRetro adapter presenting one -- the on-screen keyboard goes away and
+ * the console takes the whole screen, with the arrow keys recalling earlier
+ * lines.  R switches between the two whenever you like.
  */
 #include "n64.h"
 
-#define KB_ROWS 6
-#define KB_COLS 12
-#define KEY_W   40
-#define KEY_H   20
-#define KB_X    80
-#define KB_Y    348
-#define HINT_ROW 20
-#define LINE_MAX 44        /* what fits in the console's own columns */
+#define HINT_ROW   20
+#define LINE_MAX   120
+#define HISTORY    16
 
-static const char *const keymap[KB_ROWS] = {
-    "1234567890-=",
-    "QWERTYUIOP[]",
-    "ASDFGHJKL;'\"",
-    "ZXCVBNM,./\\?",
-    ":!@#$%^&*()+",
-    "      \b\b\b\n\n\n",
-};
-
-static int sel_row, sel_col = 0;
-static int last_row = -1, last_col = -1;
 static char line[LINE_MAX + 1];
 static int len;
 static int blink;
 static int shown_len = -1;
 static int shown_blink = -1;
 static int shown_row = -1;
+static int osk_on;              /* the on-screen keyboard is showing */
+static int active;              /* the prompt is on the screen */
 
-static u16 c_key, c_keyedge, c_label, c_sel, c_sellabel, c_dim, c_amber, c_text;
+static char history[HISTORY][LINE_MAX + 1];
+static int hist_count, hist_at;
 
-static char key_at(int row, int col)
+static u16 c_dim, c_amber, c_text;
+
+static int line_max(void)
 {
-    return keymap[row][col];
+    int n = con_cols() - 5;     /* "ok> " and the cursor */
+
+    return n > LINE_MAX ? LINE_MAX : n;
 }
 
-static const char *key_label(char c)
+/* Lay the screen out for the current mode, and put the console's text back:
+ * also what anything that has painted over the prompt -- the editor, an app
+ * window -- calls to get it back. */
+static void layout(void)
 {
-    switch (c) {
-    case ' ':  return "SPACE";
-    case '\b': return "BSP";
-    case '\n': return "ENTER";
-    default:   return 0;
-    }
-}
+    gfx_cursor_hide();
+    gfx_box(0, 16, SCREEN_W, SCREEN_H - 16, RGB(10, 14, 30));
+    if (osk_on) {
+        static const char hint[] =
+            "d-pad or mouse   A type   B rub out   Z space   START run   "
+            "L desktop";
 
-/* Draw the run of identical cells that contains (row, col) as one key. */
-static void draw_key(int row, int col)
-{
-    char c = key_at(row, col);
-    int first = col, last = col;
-    int x, y, w, selected;
-    const char *label;
-
-    while (first > 0 && key_at(row, first - 1) == c)
-        first--;
-    while (last < KB_COLS - 1 && key_at(row, last + 1) == c)
-        last++;
-
-    x = KB_X + first * KEY_W;
-    y = KB_Y + row * KEY_H;
-    w = (last - first + 1) * KEY_W;
-    selected = (sel_row == row && sel_col >= first && sel_col <= last);
-
-    gfx_box(x + 1, y + 1, w - 2, KEY_H - 2, selected ? c_sel : c_key);
-    gfx_frame(x + 1, y + 1, w - 2, KEY_H - 2, c_keyedge);
-
-    label = key_label(c);
-    if (label) {
-        int n = 0;
-        while (label[n])
-            n++;
-        gfx_text(x + (w - n * 8) / 2, y + 2, label, n,
-                 selected ? c_sellabel : c_label);
+        con_set_cols(48);
+        con_scroll_region(2, 19);
+        con_redraw();
+        /* On the character grid, so a test can read it back. */
+        gfx_text(OSK_X - 8, HINT_ROW * 16, hint, (int)sizeof(hint) - 1, c_dim);
+        osk_draw();
     } else {
-        gfx_glyph(x + (w - 8) / 2, y + 2, c,
-                  selected ? c_sellabel : c_label, 0, 0);
+        static const char hint[] =
+            "keyboard   Enter run   up/down history   R on-screen keys   "
+            "Tab desktop";
+
+        /* Row 29 is below what a television shows, so the hint is on 28. */
+        con_set_cols(CON_MAX_COLS);
+        con_scroll_region(2, 27);
+        con_redraw();
+        gfx_text(16, 28 * 16, hint, (int)sizeof(hint) - 1, c_dim);
     }
+    if (len > line_max())
+        line[len = line_max()] = 0;
+    shown_len = -1;
 }
 
-static void draw_keyboard(void)
+void repl_repaint(void)
 {
-    int row, col;
-
-    gfx_box(KB_X - 6, KB_Y - 6, KB_COLS * KEY_W + 12, KB_ROWS * KEY_H + 12,
-            RGB(16, 20, 44));
-    gfx_frame(KB_X - 6, KB_Y - 6, KB_COLS * KEY_W + 12, KB_ROWS * KEY_H + 12,
-              c_keyedge);
-    for (row = 0; row < KB_ROWS; row++)
-        for (col = 0; col < KB_COLS; col++)
-            if (col == 0 || key_at(row, col) != key_at(row, col - 1))
-                draw_key(row, col);
-}
-
-static void draw_hint(void)
-{
-    static const char hint[] =
-        "d-pad or mouse   A type   B rub out   Z space   START run   L desktop";
-
-    con_erase_row(HINT_ROW);
-    /* On the character grid, so a test can read it back. */
-    gfx_text(KB_X - 8, HINT_ROW * 16, hint, (int)sizeof(hint) - 1, c_dim);
+    if (active)
+        layout();
 }
 
 /* The line being typed lives on whatever row the console cursor is on. */
@@ -133,13 +95,54 @@ static void type_char(char c)
             line[--len] = 0;
         return;
     }
-    if (c == '\n') {
-        return;                 /* handled by the caller, which submits */
-    }
-    if (len < LINE_MAX) {
+    if ((u8)c < ' ' || (u8)c > '~')
+        return;                 /* control and editing keys: not text */
+    if (len < line_max()) {
         line[len++] = c;
         line[len] = 0;
     }
+}
+
+static int same_line(const char *a, const char *b)
+{
+    while (*a && *a == *b) {
+        a++;
+        b++;
+    }
+    return *a == *b;
+}
+
+static void remember(void)
+{
+    int i;
+
+    if (!len)
+        return;
+    if (hist_count && same_line(history[(hist_count - 1) % HISTORY], line))
+        return;                 /* the same line again: once is enough */
+    for (i = 0; i <= len; i++)
+        history[hist_count % HISTORY][i] = line[i];
+    hist_count++;
+}
+
+static void recall(int step)
+{
+    int oldest = hist_count > HISTORY ? hist_count - HISTORY : 0;
+    int i;
+
+    hist_at += step;
+    if (hist_at < oldest)
+        hist_at = oldest;
+    if (hist_at >= hist_count) {
+        hist_at = hist_count;
+        len = 0;
+        line[0] = 0;
+        return;
+    }
+    for (i = 0; history[hist_at % HISTORY][i] && i < line_max(); i++)
+        line[i] = history[hist_at % HISTORY][i];
+    line[i] = 0;
+    len = i;
 }
 
 static void submit(void)
@@ -155,6 +158,8 @@ static void submit(void)
     con_putc('\n');
     con_color(c_text);
 
+    remember();
+    hist_at = hist_count;
     if (len)
         forth_eval(line);
     if (con_col() != 0)
@@ -165,127 +170,102 @@ static void submit(void)
     shown_len = -1;
 }
 
-/* Direction with auto-repeat, from the d-pad or the stick. */
-static u16 direction(void)
-{
-    static int hold;
-    static u16 last;
-    const pad_t *p = input_pad(0);
-    u16 now = p->buttons & (PAD_UP | PAD_DOWN | PAD_LEFT | PAD_RIGHT);
-
-    if (p->stick_x > 48)  now |= PAD_RIGHT;
-    if (p->stick_x < -48) now |= PAD_LEFT;
-    if (p->stick_y > 48)  now |= PAD_UP;
-    if (p->stick_y < -48) now |= PAD_DOWN;
-
-    if (!now) {
-        hold = 0;
-        last = 0;
-        return 0;
-    }
-    if (now != last) {
-        hold = 0;
-        last = now;
-        return now;
-    }
-    hold++;
-    if (hold > 18 && (hold & 3) == 0)
-        return now;
-    return 0;
-}
-
 void repl_run(void)
 {
-    c_key      = RGB(30, 38, 74);
-    c_keyedge  = RGB(64, 78, 120);
-    c_label    = RGB(205, 213, 228);
-    c_sel      = RGB(96, 224, 255);
-    c_sellabel = RGB(10, 14, 30);
+    repl_run_command(0);
+}
+
+/* The prompt, with a command already typed and run -- which is how Files
+ * runs a program that is not an application. */
+void repl_run_command(const char *command)
+{
     c_dim      = RGB(110, 125, 155);
     c_amber    = RGB(255, 190, 90);
     c_text     = RGB(205, 213, 228);
 
     input_init();
-    last_row = last_col = -1;
-    shown_len = -1;
-    draw_hint();
-    draw_keyboard();
+    osk_on = !input_keyboard()->present;
+    hist_at = hist_count;
+    active = 1;
+    layout();
+    if (command) {
+        for (len = 0; command[len] && len < line_max(); len++)
+            line[len] = command[len];
+        line[len] = 0;
+        submit();
+    }
 
     for (;;) {
         u16 dir, pressed;
+        int c;
 
         input_poll();
-        dir = direction();
+        dir = osk_direction();
         pressed = input_pressed(0);
 
-        {   /* A real keyboard, if the adapter is presenting one. */
-            int c = input_getchar();
+        /* A real keyboard, if the adapter is presenting one. */
+        c = input_getchar();
+        if (c == '\n')
+            submit();
+        else if (c == KEY_UP)
+            recall(-1);
+        else if (c == KEY_DOWN)
+            recall(1);
+        else if (c == '\t')
+            pressed |= PAD_L;
+        else if (c)
+            type_char((char)c);
 
-            if (c == '\n') {
-                submit();
-            } else if (c) {
-                type_char((char)c);
-            }
-        }
         {   /* A real mouse: click a key to type it. */
             const mouse_t *ms = input_mouse();
 
             if (ms->present) {
-                if (ms->edges & MOUSE_LEFT) {
-                    int col = (ms->x - KB_X) / KEY_W;
-                    int row = (ms->y - KB_Y) / KEY_H;
+                if ((ms->edges & MOUSE_LEFT) && osk_on) {
+                    char k;
 
-                    if (col >= 0 && col < KB_COLS && row >= 0 && row < KB_ROWS) {
-                        char c = key_at(row, col);
-
-                        gfx_cursor_hide();
-                        sel_row = row;
-                        sel_col = col;
-                        if (c == '\n')
-                            submit();
-                        else
-                            type_char(c);
-                    }
+                    gfx_cursor_hide();
+                    k = osk_click(ms->x, ms->y);
+                    if (k == '\n')
+                        submit();
+                    else if (k)
+                        type_char(k);
                 }
-                gfx_cursor_show(ms->x, ms->y, RGB(255, 255, 255), RGB(0, 0, 0));
             }
         }
 
-        if (dir & PAD_LEFT)  sel_col = (sel_col + KB_COLS - 1) % KB_COLS;
-        if (dir & PAD_RIGHT) sel_col = (sel_col + 1) % KB_COLS;
-        if (dir & PAD_UP)    sel_row = (sel_row + KB_ROWS - 1) % KB_ROWS;
-        if (dir & PAD_DOWN)  sel_row = (sel_row + 1) % KB_ROWS;
+        if (osk_on) {
+            osk_move(dir);
+            if (pressed & PAD_A) {
+                char k = osk_selected();
 
-        if (pressed & PAD_A) {
-            char c = key_at(sel_row, sel_col);
-
-            if (c == '\n')
-                submit();
-            else
-                type_char(c);
+                if (k == '\n')
+                    submit();
+                else
+                    type_char(k);
+            }
+            if (pressed & PAD_B)
+                type_char('\b');
+            if (pressed & PAD_Z)
+                type_char(' ');
+        } else {
+            if (dir & PAD_UP)
+                recall(-1);
+            if (dir & PAD_DOWN)
+                recall(1);
         }
-        if (pressed & PAD_B)
-            type_char('\b');
-        if (pressed & PAD_Z)
-            type_char(' ');
         if (pressed & PAD_START)
             submit();
         if (pressed & PAD_R) {
-            con_clear();
-            shown_len = -1;
+            osk_on = !osk_on;
+            layout();
         }
         if (pressed & PAD_L) {
             gfx_cursor_hide();
+            active = 0;
+            con_set_cols(48);
+            con_scroll_region(2, 19);
             return;
         }                     /* back to the desktop */
-
-        if (sel_row != last_row || sel_col != last_col) {
-            if (last_row >= 0)
-                draw_key(last_row, last_col);
-            draw_key(sel_row, sel_col);
-            last_row = sel_row;
-            last_col = sel_col;
-        }
 
         blink = (blink + 1) & 31;
         if (len != shown_len || (blink < 16) != (shown_blink < 16) ||
@@ -296,6 +276,10 @@ void repl_run(void)
             shown_row = con_row();
         }
 
+        /* The pointer last, over whatever this frame drew. */
+        if (input_mouse()->present)
+            gfx_cursor_show(input_mouse()->x, input_mouse()->y,
+                            RGB(255, 255, 255), RGB(0, 0, 0));
         kernel_status_bar();
         vi_wait_vblank();
     }

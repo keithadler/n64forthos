@@ -38,6 +38,19 @@
   .a { border-color: #4a7fd4; } .b { border-color: #48b070; }
   .start { border-color: #d45a5a; }
   #pad small { color: var(--dim); font-size: 11px; }
+  .cpad { display: grid; grid-template: repeat(3, 26px) / repeat(3, 30px); gap: 2px; }
+  .cpad button { width: 30px; height: 26px; font-size: 10px; border-color: #b8a040; }
+  #pakbar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  #pakbar button { width: auto; height: 24px; padding: 0 10px; }
+  #pakfiles { margin: 0 14px 12px; padding: 10px 12px; border: 1px solid #3b4970;
+              border-radius: 6px; background: #0d1226; max-width: 880px; }
+  #pakfiles[hidden] { display: none; }
+  #pakfiles table { border-collapse: collapse; width: 100%; font-size: 12px; }
+  #pakfiles td { padding: 3px 8px 3px 0; }
+  #pakfiles td.n { text-align: right; color: var(--dim); }
+  #pakfiles button { width: auto; height: 22px; padding: 0 8px; font-size: 11px; }
+  #pakfiles p { margin: 6px 0 0; color: var(--dim); }
+  body.dropping main canvas { outline: 2px dashed var(--cyan); outline-offset: 4px; }
 
   footer { padding: 4px 14px 10px; color: var(--dim); display: flex; gap: 16px;
            font-size: 12px; }
@@ -49,8 +62,9 @@
      this repository &mdash; so the page can hand it a <b>real mouse and
      keyboard</b>, as an N64 Mouse and a Randnet Keyboard on joybus channels 2
      and 3, exactly as a BlueRetro adapter presents them to the console.
-     <b>Click the picture</b> for the mouse (Esc takes it back); type at the
-     prompt; or use the pad.</p>
+     <b>Click the picture</b> for the mouse (Esc takes it back). Type, or
+     <b>paste</b> a program straight in. Your files go on the
+     <b>Controller Pak</b>, kept in this browser.</p>
 </header>
 <main>
   <canvas id="screen" width="640" height="480"></canvas>
@@ -72,15 +86,36 @@
       <button data-btn="L">L</button>
       <button data-btn="R">R</button>
     </div>
+    <div class="cpad">
+      <span></span><button class="c" data-btn="CUP">C&#9650;</button><span></span>
+      <button class="c" data-btn="CLEFT">C&#9664;</button><span></span><button class="c" data-btn="CRIGHT">C&#9654;</button>
+      <span></span><button class="c" data-btn="CDOWN">C&#9660;</button><span></span>
+    </div>
     <small>A opens &middot; B closes</small>
   </div>
 </main>
 <footer>
   <span id="status">loading the cartridge&hellip;</span>
   <span id="speed"></span>
+  <span id="pakbar">
+    <span id="pakstate">Controller Pak</span>
+    <button id="eject">eject</button>
+    <button id="download">download</button>
+    <button id="upload">load&hellip;</button>
+    <button id="showfiles">files&hellip;</button>
+    <input id="pakfile" type="file" accept=".pak,.mpk,.bin" hidden>
+    <input id="addfiles" type="file" multiple hidden>
+  </span>
 </footer>
+<section id="pakfiles" hidden>
+  <table><tbody id="pakrows"></tbody></table>
+  <p><button id="addbutton">add files&hellip;</button>
+     or drop them on the picture. They go on the Controller Pak; the system
+     notices the next time it looks. <span id="pakmsg"></span></p>
+</section>
 <script type="module">
 import { N64 } from './n64emu.js';
+import * as pakfs from './pakfs.js';
 
 const canvas = document.getElementById('screen');
 const ctx = canvas.getContext('2d', { alpha: false });
@@ -90,48 +125,206 @@ const speed = document.getElementById('speed');
 
 const PAD = { A: 0x8000, B: 0x4000, Z: 0x2000, START: 0x1000,
               UP: 0x0800, DOWN: 0x0400, LEFT: 0x0200, RIGHT: 0x0100,
-              L: 0x0020, R: 0x0010 };
+              L: 0x0020, R: 0x0010, CUP: 0x0008, CDOWN: 0x0004,
+              CLEFT: 0x0002, CRIGHT: 0x0001 };
+// The arrows are the d-pad; every other key is a key, typed as itself.
 const padKeys = {
   ArrowUp: PAD.UP, ArrowDown: PAD.DOWN, ArrowLeft: PAD.LEFT,
-  ArrowRight: PAD.RIGHT, KeyZ: PAD.A, KeyX: PAD.B, Enter: PAD.START,
-  ShiftLeft: PAD.Z, Tab: PAD.L,
+  ArrowRight: PAD.RIGHT,
+};
+// The kernel's codes for the keys that are not characters (src/n64.h).
+const special = {
+  Enter: 13, Backspace: 8, Tab: 9, Escape: 0x1b, Delete: 0x88,
+  Home: 0x84, End: 0x85, PageUp: 0x86, PageDown: 0x87,
 };
 
 const rom = new Uint8Array(await (await fetch('rom.z64?v=' + Date.now())).arrayBuffer());
 const emu = new N64(rom);
 window.emu = emu;
+
+/* --- the Controller Pak, kept in this browser ----------------------------
+ * A real pak keeps its contents with the power off; this one keeps them in
+ * localStorage, so a reload is a power cycle with the same pak inserted. */
+const PAK_KEY = 'n64forthos-pak-v1';
+const pakState = document.getElementById('pakstate');
+let pak = new Uint8Array(32768);
+try {
+  const saved = localStorage.getItem(PAK_KEY);
+  if (saved) pak = Uint8Array.from(atob(saved), (c) => c.charCodeAt(0));
+} catch { /* storage unavailable: a pak for this visit only */ }
+let saveTimer = 0;
+function keepPak() {
+  clearTimeout(saveTimer);
+  saveTimer = setTimeout(() => {
+    try {
+      let bin = '';
+      for (const b of pak) bin += String.fromCharCode(b);
+      localStorage.setItem(PAK_KEY, btoa(bin));
+    } catch { /* full or blocked: the pak still works until reload */ }
+  }, 250);
+}
+function showPak() {
+  pakState.textContent = emu.pak ? 'Controller Pak: inserted' : 'Controller Pak: out';
+  document.getElementById('eject').textContent = emu.pak ? 'eject' : 'insert';
+}
+emu.pak = pak;
+emu.onPakWrite = keepPak;
+showPak();
+document.getElementById('eject').onclick = () => {
+  emu.pak = emu.pak ? null : pak;
+  showPak();
+};
+document.getElementById('download').onclick = () => {
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([pak], { type: 'application/octet-stream' }));
+  a.download = 'n64forthos.pak';
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+};
+const pakFile = document.getElementById('pakfile');
+document.getElementById('upload').onclick = () => pakFile.click();
+pakFile.onchange = async () => {
+  const f = pakFile.files[0];
+  if (!f) return;
+  const bytes = new Uint8Array(await f.arrayBuffer());
+  if (bytes.length !== 32768) {
+    pakState.textContent = `not a pak image: ${bytes.length} bytes, want 32768`;
+    return;
+  }
+  pak.set(bytes);
+  keepPak();
+  emu.pak = null;             // pull it and push it back in: the system
+  showPak();                  // notices the next time it looks
+  setTimeout(() => { emu.pak = pak; showPak(); }, 1200);
+};
+
+/* --- files between the pak and this computer ---------------------------- */
+const panel = document.getElementById('pakfiles');
+const rows = document.getElementById('pakrows');
+const pakMsg = document.getElementById('pakmsg');
+function listFiles() {
+  rows.textContent = '';
+  const st = pakfs.state(pak);
+  if (st !== 'ok') {
+    rows.innerHTML = `<tr><td>${st === 'blank' ? 'Nothing on the pak yet.'
+      : 'This pak is not formatted for n64forthos.'}</td></tr>`;
+    return;
+  }
+  const files = pakfs.list(pak);
+  if (!files.length) rows.innerHTML = '<tr><td>No files on the pak yet.</td></tr>';
+  for (const f of files) {
+    const tr = document.createElement('tr');
+    const name = document.createElement('td'); name.textContent = f.name;
+    const size = document.createElement('td'); size.className = 'n'; size.textContent = f.size;
+    const act = document.createElement('td');
+    const get = document.createElement('button'); get.textContent = 'download';
+    get.onclick = () => {
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(new Blob([pakfs.read(pak, f)], { type: 'text/plain' }));
+      a.download = f.name;
+      a.click();
+      setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+    };
+    const del = document.createElement('button'); del.textContent = 'delete';
+    del.onclick = () => {
+      if (!confirm(`Delete ${f.name} from the Controller Pak?`)) return;
+      pakfs.remove(pak, f.name); keepPak(); listFiles();
+    };
+    act.append(get, ' ', del);
+    tr.append(name, size, act);
+    rows.append(tr);
+  }
+  const t = document.createElement('tr');
+  t.innerHTML = `<td></td><td class="n">${pakfs.free(pak)}</td><td>bytes free</td>`;
+  rows.append(t);
+}
+async function addFiles(list) {
+  const done = [];
+  for (const f of list) {
+    try {
+      const text = (await f.text()).replace(/\r\n?/g, '\n');
+      done.push(pakfs.write(pak, f.name, new TextEncoder().encode(text)));
+    } catch (err) {
+      pakMsg.textContent = err.message;
+      break;
+    }
+  }
+  if (done.length) pakMsg.textContent = `added ${done.join(', ')}`;
+  keepPak();
+  panel.hidden = false;
+  listFiles();
+}
+document.getElementById('showfiles').onclick = () => {
+  panel.hidden = !panel.hidden;
+  if (!panel.hidden) listFiles();
+};
+const addInput = document.getElementById('addfiles');
+document.getElementById('addbutton').onclick = () => addInput.click();
+addInput.onchange = () => { addFiles([...addInput.files]); addInput.value = ''; };
+addEventListener('dragover', (e) => { e.preventDefault(); document.body.classList.add('dropping'); });
+addEventListener('dragleave', () => document.body.classList.remove('dropping'));
+addEventListener('drop', (e) => {
+  e.preventDefault();
+  document.body.classList.remove('dropping');
+  if (e.dataTransfer.files.length) addFiles([...e.dataTransfer.files]);
+});
+// What the system itself saves shows up here too.
+emu.onPakWrite = () => { keepPak(); if (!panel.hidden) setTimeout(listFiles, 300); };
+
 emu.boot();
 status.textContent = `${(rom.length / 1024) | 0} KiB of a 64 MiB cartridge, booted`;
 
 /* --- input ---------------------------------------------------------------
  *
  * `down` is what the user is holding, from any source.  `latch` keeps a very
- * short press -- a tap on the pad, a synthetic keystroke -- down for a few
- * frames, because the operating system reads its controller once a frame and
- * would otherwise never see it.
+ * short press -- a tap on the pad -- down for a few frames, because the
+ * operating system reads its controller once a frame and would otherwise
+ * never see it.  Typed keys go into the emulator's queue, which hands them
+ * to the kernel a poll at a time.
  */
 const down = new Set();
 const latch = new Map();
-const typed = [];
-let key = 0, keyFrames = 0;
 
 function press(mask) { down.add(mask); latch.set(mask, 4); }
 function release(mask) { down.delete(mask); }
 
-function asciiOf(e) {
-  if (e.key === 'Enter') return 13;
-  if (e.key === 'Backspace') return 8;
-  if (e.key.length === 1) return e.key.toUpperCase().charCodeAt(0);
-  return 0;
+function type(text, pasted = false) {
+  if (pasted) emu.keyQueue.push(0x16);          // ^V: the editor stops indenting
+  for (const ch of text.replace(/\r\n?/g, '\n').replace(/\t/g, '   ')) {
+    const c = ch === '\n' ? 13 : ch.charCodeAt(0);
+    if (c === 13 || (c >= 32 && c < 127)) emu.keyQueue.push(c);
+  }
+  if (pasted) emu.keyQueue.push(0x16);          // ...and starts again
 }
+window.type = type;
+
 addEventListener('keydown', (e) => {
-  if (padKeys[e.code] !== undefined) press(padKeys[e.code]);
-  const code = asciiOf(e);
-  if (code) typed.push(code);
-  if (e.code === 'Tab' || e.code === 'Space' || e.code.startsWith('Arrow')) e.preventDefault();
+  if (e.metaKey || e.altKey) return;             // the browser's own shortcuts
+  if (padKeys[e.code] !== undefined) {
+    press(padKeys[e.code]);
+    e.preventDefault();
+    return;
+  }
+  let code = 0;
+  if (e.ctrlKey && /^Key[A-Z]$/.test(e.code)) {
+    if (e.code === 'KeyV') return;               // leave paste to the paste event
+    code = e.code.charCodeAt(3) & 0x1f;
+  } else if (special[e.key] !== undefined) {
+    code = special[e.key];
+  } else if (e.key.length === 1 && !e.ctrlKey) {
+    code = e.key.charCodeAt(0);
+  }
+  if (code) {
+    emu.keyQueue.push(code);
+    e.preventDefault();
+  }
 });
 addEventListener('keyup', (e) => {
   if (padKeys[e.code] !== undefined) release(padKeys[e.code]);
+});
+addEventListener('paste', (e) => {
+  type(e.clipboardData.getData('text'), true);
+  e.preventDefault();
 });
 
 for (const button of document.querySelectorAll('button[data-btn]')) {
@@ -153,19 +346,41 @@ function feedInput() {
     if (frames <= 1) latch.delete(mask); else latch.set(mask, frames - 1);
   }
   emu.pad.buttons = bits;
-
-  if (keyFrames > 0) {
-    keyFrames--;
-    if (keyFrames === 2) key = 0;             /* a gap, so repeats are seen */
-  } else if (typed.length) {
-    key = typed.shift();
-    keyFrames = 5;
-  }
-  emu.keys = key ? [key] : [];
 }
 
+/* --- sound ---------------------------------------------------------------
+ * The kernel's audio buffers go to Web Audio, scheduled end to end.  Until
+ * the page has been clicked or typed at, the browser will not play anything,
+ * and the emulator times the buffers itself. */
+let audio = null, audioAt = 0;
+function wakeAudio() {
+  if (!audio) {
+    try { audio = new AudioContext(); } catch { return; }
+    emu.audioFull = () => audioAt - audio.currentTime > 0.12;
+  }
+  if (audio.state === 'suspended') audio.resume();
+}
+addEventListener('keydown', wakeAudio);
+addEventListener('pointerdown', wakeAudio);
+emu.onAudio = (samples, rate) => {
+  if (!audio || audio.state !== 'running') return;
+  const n = samples.length / 2;
+  const buf = audio.createBuffer(2, n, rate);
+  const l = buf.getChannelData(0), r = buf.getChannelData(1);
+  for (let i = 0; i < n; i++) { l[i] = samples[i * 2] / 32768; r[i] = samples[i * 2 + 1] / 32768; }
+  const src = audio.createBufferSource();
+  src.buffer = buf;
+  src.connect(audio.destination);
+  audioAt = Math.max(audioAt, audio.currentTime + 0.03);
+  src.start(audioAt);
+  audioAt += n / rate;
+};
+
 /* --- the mouse: relative movement, through pointer lock --------------- */
-canvas.addEventListener('click', () => canvas.requestPointerLock());
+canvas.addEventListener('click', () => {
+  // Some embedded views refuse pointer lock; the keyboard still works there.
+  Promise.resolve(canvas.requestPointerLock()).catch(() => {});
+});
 addEventListener('mousemove', (e) => {
   if (document.pointerLockElement !== canvas) return;
   emu.mouse.dx = Math.max(-127, Math.min(127, emu.mouse.dx + e.movementX));

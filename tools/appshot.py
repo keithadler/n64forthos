@@ -40,7 +40,7 @@ def main():
 
     m = n64emu.load(args.rom)
     m.run(16_000_000)
-    open_app(m, 0 if args.app == "mandel" else 1)
+    open_app(m, 2 if args.app == "mandel" else 3)   # after Files and Console
     if args.text:
         for line in screen.decode(m.framebuffer()[2]):
             print(f"| {line}")

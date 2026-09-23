@@ -8,11 +8,6 @@
  * and the pixels it draws.
  */
 #include "n64.h"
-#include "apps/mandel_fth.h"
-#include "apps/cornell_fth.h"
-#include "apps/navier_fth.h"
-#include "apps/life_fth.h"
-#include "apps/wm_fth.h"
 
 #define DESK_X   8
 #define DESK_Y   32
@@ -32,7 +27,26 @@
 #define RUN_X    (DESK_X + DESK_W - 128)
 #define CLOSE_X  (DESK_X + DESK_W - 64)
 
-#define ROW_H 48                /* two lines of text and a line of air */
+#define ROW_H 32                /* two lines of text, on the character grid */
+#define LIST_TOP 96
+
+/* The controller's buttons, with Enter and Escape on a keyboard standing
+ * in for A and B, so a keyboard alone can drive the desktop. */
+static u16 pressed_now(void)
+{
+    u16 pressed = input_pressed(0);
+    int c = input_getchar();
+
+    if (c == '\n')
+        pressed |= PAD_A;
+    if (c == KEY_ESC)
+        pressed |= PAD_B;
+    if (c == KEY_UP)
+        pressed |= PAD_UP;
+    if (c == KEY_DOWN)
+        pressed |= PAD_DOWN;
+    return pressed;
+}
 
 static int hit(int x, int y, int bx, int by, int bw, int bh)
 {
@@ -43,31 +57,55 @@ static int hit(int x, int y, int bx, int by, int bw, int bh)
 #define APP_CONSOLE 1
 #define APP_DEVICES 2
 #define APP_FULL    3   /* the application owns the whole screen */
+#define APP_FILES   4
 
+/* An application is a file.  The desktop opens it by name, so a copy of
+ * MANDEL.FTH saved on the Controller Pak is the Mandelbrot you get. */
 typedef struct {
     const char *name;
     const char *blurb;
-    const char *source;         /* Forth source, for APP_FORTH */
-    const char *entry;          /* the word A runs */
+    const char *file;           /* Forth source, for APP_FORTH and APP_FULL */
     int kind;
 } app_t;
 
 static const app_t apps[] = {
-    { "Mandelbrot", "escape-time fractal, 16.16 fixed point",
-      mandel_fth, "ROW", APP_FORTH },
-    { "Cornell box", "ray tracer: five walls, two spheres, a light",
-      cornell_fth, "ROW", APP_FORTH },
-    { "Navier-Stokes", "the finite-time blowup, in similarity variables",
-      navier_fth, "ROW", APP_FORTH },
-    { "Life", "Conway's life, 64 by 64, on a torus",
-      life_fth, "ROW", APP_FORTH },
-    { "Windows", "a window manager, written in Forth", wm_fth, "FRAME",
-      APP_FULL },
-    { "Console", "the Forth prompt, keyboard or controller", 0, 0,
+    { "Files", "your programs and notes: edit, run, keep on the Pak", 0,
+      APP_FILES },
+    { "Console", "the Forth prompt, keyboard or controller", 0,
       APP_CONSOLE },
-    { "Devices", "what is plugged in, and teaching it the keyboard", 0, 0,
+    { "Mandelbrot", "escape-time fractal, 16.16 fixed point",
+      "MANDEL.FTH", APP_FORTH },
+    { "Cornell box", "ray tracer: five walls, two spheres, a light",
+      "CORNELL.FTH", APP_FORTH },
+    { "Navier-Stokes", "the finite-time blowup, in similarity variables",
+      "NAVIER.FTH", APP_FORTH },
+    { "Life", "Conway's life, 64 by 64, on a torus",
+      "LIFE.FTH", APP_FORTH },
+    { "Windows", "a window manager, written in Forth", "WM.FTH",
+      APP_FULL },
+    { "Tasks", "Mandelbrot, Life and Navier-Stokes at once, in windows",
+      "TASKS.FTH", APP_FULL },
+    { "Devices", "what is plugged in, and teaching it the keyboard", 0,
       APP_DEVICES },
 };
+
+/* The source of whichever application is open. */
+static char app_src[FS_FILE_MAX + 1];
+
+static int load_app(const char *file)
+{
+    int n = 0;
+
+    while (file[n])
+        n++;
+    n = fs_read(file, n, app_src, FS_FILE_MAX);
+    if (n < 0) {
+        app_src[0] = 0;
+        return n;
+    }
+    app_src[n] = 0;
+    return 0;
+}
 #define NAPPS ((int)(sizeof(apps) / sizeof(apps[0])))
 
 static u16 c_desk, c_win, c_bar, c_edge, c_text, c_dim, c_amber, c_ink, c_cyan;
@@ -93,12 +131,45 @@ static void text_at(int x, int y, const char *s, u16 c)
  * enough to swallow a button press. */
 static void draw_row(int i, int on)
 {
-    int y = 112 + i * ROW_H;
+    int y = LIST_TOP + i * ROW_H;
 
     gfx_box(56, y, 528, 32, on ? RGB(40, 52, 96) : c_win);
     text_at(72, y, on ? ">" : " ", c_cyan);
     text_at(88, y, apps[i].name, on ? c_amber : c_text);
     text_at(88, y + 16, apps[i].blurb, c_dim);
+}
+
+static char *put_str(char *p, const char *s);
+static void put_u32(char *p, u32 v);
+
+/* Where your files are going, at the foot of the launcher. */
+static void draw_storage(void)
+{
+    char line[64], *p = line;
+
+    switch (fs_state()) {
+    case FS_PAK:
+        p = put_str(p, "Controller Pak: ");
+        put_u32(p, (u32)fs_pak_files());
+        p += slen(p);
+        p = put_str(p, fs_pak_files() == 1 ? " file, " : " files, ");
+        put_u32(p, (u32)fs_free_bytes());
+        p += slen(p);
+        p = put_str(p, " bytes free");
+        break;
+    case FS_RAM:
+        p = put_str(p, "no Controller Pak: files kept in RAM until power off");
+        break;
+    case FS_UNFORMATTED:
+        p = put_str(p, "Controller Pak not formatted: FORMAT at the prompt");
+        break;
+    default:
+        p = put_str(p, "Controller Pak: not usable, see Files");
+        break;
+    }
+    *p = 0;
+    gfx_box(56, 416, 528, 16, c_win);
+    text_at(56, 416, line, fs_state() == FS_PAK ? c_dim : c_amber);
 }
 
 static void draw_desktop(int sel)
@@ -107,14 +178,15 @@ static void draw_desktop(int sel)
 
     gfx_box(0, 16, SCREEN_W, SCREEN_H - 16, c_desk);
     gfx_box(48, 48, 544, 400, c_win);
-    gfx_box(48, 48, 544, 20, c_bar);
+    gfx_box(48, 48, 544, 16, c_bar);
     gfx_frame(48, 48, 544, 400, c_edge);
     text_at(56, 48, "n64forthos", c_ink);
     text_at(320, 48, "d-pad or point and click, A opens", c_ink);
-    text_at(56, 80, "A Forth system with a desktop. Pick something:", c_dim);
+    text_at(56, 64, "A Forth system with a desktop. Pick something:", c_dim);
 
     for (i = 0; i < NAPPS; i++)
         draw_row(i, i == sel);
+    draw_storage();
 }
 
 /* ------------------------------------------------------- an app's window */
@@ -151,13 +223,13 @@ static void draw_source(const char *src, int top)
     }
 }
 
-static void draw_app_frame(const app_t *app)
+static void draw_app_frame(const char *title)
 {
     gfx_box(0, 16, SCREEN_W, SCREEN_H - 16, c_desk);
     gfx_box(DESK_X, DESK_Y, DESK_W, DESK_H, c_win);
     gfx_box(DESK_X, DESK_Y, DESK_W, 20, c_bar);
     gfx_frame(DESK_X, DESK_Y, DESK_W, DESK_H, c_edge);
-    text_at(DESK_X + 8, DESK_Y, app->name, c_ink);
+    text_at(DESK_X + 8, DESK_Y, title, c_ink);
     text_at(DESK_X + 232, DESK_Y, "A run   B close   up/down scroll", c_ink);
     /* The same two things, for a pointer. */
     gfx_box(RUN_X, DESK_Y, 56, 18, RGB(30, 38, 74));
@@ -199,7 +271,7 @@ static void put_u32(char *p, u32 v)
     *p = 0;
 }
 
-static void open_app(const app_t *app)
+static void open_app(const char *title, const char *source)
 {
     u32 mark = forth_mark();
     int top = 0, lines = 0;
@@ -207,15 +279,15 @@ static void open_app(const app_t *app)
     u32 started = 0;
     const char *p;
 
-    for (p = app->source; *p; p++)
+    for (p = source; *p; p++)
         if (*p == '\n')
             lines++;
 
-    draw_app_frame(app);
+    draw_app_frame(title);
     app_status("compiling...", c_dim);
     forth_set_canvas(CAN_X, CAN_Y, CAN_W, CAN_H);
-    forth_eval_lines(app->source);
-    draw_source(app->source, top);
+    forth_eval_lines(source);
+    draw_source(source, top);
     app_status("A runs it", c_dim);
 
     for (;;) {
@@ -224,7 +296,7 @@ static void open_app(const app_t *app)
         int clicked_run = 0;
 
         input_poll();
-        pressed = input_pressed(0);
+        pressed = pressed_now();
         ms = input_mouse();
         if (ms->present) {
             if (ms->edges & MOUSE_LEFT) {
@@ -253,7 +325,7 @@ static void open_app(const app_t *app)
                 top = lines - 4;
             if (top < 0)
                 top = 0;
-            draw_source(app->source, top);
+            draw_source(source, top);
         }
         if ((pressed & (PAD_A | PAD_START)) || clicked_run) {
             /* Start it.  The picture is drawn a row per frame so that the
@@ -284,7 +356,7 @@ static void open_app(const app_t *app)
              * controller still gets read. */
             do {
                 forth_push(row);
-                if (!forth_call(app->entry)) {
+                if (!forth_call("ROW")) {
                     running = 0;
                     app_status("stopped: see the console", c_amber);
                     break;
@@ -298,7 +370,14 @@ static void open_app(const app_t *app)
             } else if (row >= rows) {
                 /* An app that defines NEXT is an animation: advance its
                  * state and go round again until B stops it. */
-                if (forth_call("NEXT")) {
+                /* NEXT may leave a flag -- true to go round again -- or
+                 * nothing.  Taken off the stack either way: left there, a
+                 * flag a pass filled the stack in a few minutes. */
+                int depth = forth_depth(), again = forth_call("NEXT");
+
+                if (again && forth_depth() > depth)
+                    again = forth_pop() != 0;
+                if (again) {
                     row = 0;
                     passes++;
                     m = put_str(m, "pass ");
@@ -337,26 +416,26 @@ static void open_app(const app_t *app)
 /* An application that owns the screen: no source pane, no canvas of its own,
  * just a word called once a frame.  The window manager is one of these,
  * because a window manager inside a window is a poor demonstration. */
-static void full_app(const app_t *app)
+static void full_app(const char *source)
 {
     u32 mark = forth_mark();
 
     gfx_noclip();
     gfx_box(0, 16, SCREEN_W, SCREEN_H - 16, RGB(16, 20, 44));
     forth_set_canvas(0, 16, SCREEN_W, SCREEN_H - 16);
-    forth_eval_lines(app->source);
+    forth_eval_lines(source);
     forth_call("START");
 
     for (;;) {
         input_poll();
-        if (input_pressed(0) & PAD_B) {
+        if (pressed_now() & PAD_B) {
             gfx_cursor_hide();
             gfx_noclip();
             forth_release(mark);
             forth_set_canvas(0, 0, SCREEN_W, SCREEN_H);
             return;
         }
-        if (!forth_call(app->entry)) {
+        if (!forth_call("FRAME")) {
             gfx_noclip();
             con_puts("the application stopped; B to leave\n");
             forth_release(mark);
@@ -422,7 +501,7 @@ static void devices_app(void)
         u16 pressed;
 
         input_poll();
-        pressed = input_pressed(0);
+        pressed = pressed_now();
         if (pressed & PAD_B) {
             gfx_cursor_hide();
             return;
@@ -487,6 +566,11 @@ static void devices_app(void)
         gfx_box(DESK_X + 16, 176, 400, 16, c_win);
         text_at(DESK_X + 16, 176, line, c_text);
 
+        gfx_box(DESK_X + 16, 192, 400, 16, c_win);
+        text_at(DESK_X + 16, 192, pak_present()
+                ? "pak      a Controller Pak in controller 1"
+                : "pak      none in controller 1: files go to RAM", c_text);
+
         if (learn >= 0 && kb->present) {
             if (kb->last_raw && kb->last_raw != last_seen) {
                 input_key_map(kb->last_raw, learn_chars[learn]);
@@ -511,17 +595,111 @@ static void devices_app(void)
             }
             p = put_str(p, "     ");
             *p = 0;
-            gfx_box(DESK_X + 16, 208, 400, 16, c_win);
-            text_at(DESK_X + 16, 208, line, c_amber);
+            gfx_box(DESK_X + 16, 224, 400, 16, c_win);
+            text_at(DESK_X + 16, 224, line, c_amber);
         } else if (learn >= 0) {
-            gfx_box(DESK_X + 16, 208, 400, 16, c_win);
-            text_at(DESK_X + 16, 208, "no keyboard on any channel", c_amber);
+            gfx_box(DESK_X + 16, 224, 400, 16, c_win);
+            text_at(DESK_X + 16, 224, "no keyboard on any channel", c_amber);
         }
 
         if (ms->present)
             gfx_cursor_show(ms->x, ms->y, RGB(255, 255, 255), RGB(0, 0, 0));
         kernel_status_bar();
         vi_wait_vblank();
+    }
+}
+
+/* ----------------------------------------------------------- running files */
+
+/* The console, as you left it.  A command, if there is one, is typed for
+ * you. */
+void console(const char *command)
+{
+    repl_run_command(command);          /* the prompt repaints itself */
+}
+
+static int token_is(const char *t, int n, const char *word)
+{
+    int i;
+
+    for (i = 0; i < n; i++) {
+        char c = t[i];
+
+        if (c >= 'a' && c <= 'z')
+            c -= 32;
+        if (!word[i] || c != word[i])
+            return 0;
+    }
+    return !word[n];
+}
+
+/* Does the source define this word -- as a colon definition, a constant or
+ * a variable?  Read token by token, the way Forth would. */
+static int defines(const char *src, const char *word)
+{
+    const char *p = src, *prev = 0;
+    int prev_n = 0;
+
+    for (;;) {
+        const char *t;
+        int n;
+
+        while (*p && (u8)*p <= ' ')
+            p++;
+        if (!*p)
+            return 0;
+        t = p;
+        while ((u8)*p > ' ')
+            p++;
+        n = (int)(p - t);
+        if (prev && token_is(t, n, word) &&
+            (token_is(prev, prev_n, ":") || token_is(prev, prev_n, "CONSTANT") ||
+             token_is(prev, prev_n, "VARIABLE")))
+            return 1;
+        if (token_is(t, n, "\\"))           /* a comment: skip the line */
+            while (*p && *p != '\n')
+                p++;
+        prev = t;
+        prev_n = n;
+    }
+}
+
+/* Open a file as an application if it is one; 0 if it is not, and the
+ * caller runs it some other way. */
+int desktop_open_file(const char *file)
+{
+    if (load_app(file))
+        return 0;
+    if (defines(app_src, "ROWS") && defines(app_src, "ROW")) {
+        open_app(file, app_src);
+        return 1;
+    }
+    if (defines(app_src, "FRAME")) {
+        full_app(app_src);
+        return 1;
+    }
+    return 0;
+}
+
+/* What running a file means depends on what it defines: ROWS and ROW make
+ * it an application with a window and a canvas, FRAME makes it one that
+ * owns the screen, and anything else is a program for the prompt. */
+void desktop_run_file(const char *file, const char *title)
+{
+    int err = load_app(file);
+
+    if (!err && defines(app_src, "ROWS") && defines(app_src, "ROW")) {
+        open_app(title ? title : file, app_src);
+    } else if (!err && defines(app_src, "FRAME")) {
+        full_app(app_src);
+    } else {
+        /* INCLUDE says what went wrong, if something did. */
+        static char cmd[FS_NAME_MAX + 10];
+        char *p = put_str(cmd, "INCLUDE ");
+
+        put_str(p, file);
+        p[slen(file)] = 0;
+        console(cmd);
     }
 }
 
@@ -549,14 +727,14 @@ void desktop_run(void)
         const mouse_t *ms;
 
         input_poll();
-        pressed = input_pressed(0);
+        pressed = pressed_now();
         ms = input_mouse();
         if (ms->present) {
             if (ms->edges & MOUSE_LEFT) {
                 int i;
 
                 for (i = 0; i < NAPPS; i++)
-                    if (hit(ms->x, ms->y, 56, 112 + i * ROW_H, 528, 32)) {
+                    if (hit(ms->x, ms->y, 56, LIST_TOP + i * ROW_H, 528, 32)) {
                         gfx_cursor_hide();
                         draw_row(sel, 0);
                         sel = i;
@@ -578,18 +756,14 @@ void desktop_run(void)
         }
         if (pressed & (PAD_A | PAD_START)) {
             gfx_cursor_hide();
-            if (apps[sel].kind == APP_FORTH) {
-                open_app(&apps[sel]);
-            } else if (apps[sel].kind == APP_FULL) {
-                full_app(&apps[sel]);
+            if (apps[sel].kind == APP_FORTH || apps[sel].kind == APP_FULL) {
+                desktop_run_file(apps[sel].file, apps[sel].name);
             } else if (apps[sel].kind == APP_DEVICES) {
                 devices_app();
+            } else if (apps[sel].kind == APP_FILES) {
+                files_app();
             } else {
-                /* The console owns its own columns; the desktop behind it
-                 * has to be painted out before handing over. */
-                gfx_box(0, 16, SCREEN_W, SCREEN_H - 16, RGB(10, 14, 30));
-                con_clear();
-                repl_run();             /* returns when L is pressed */
+                console(0);             /* returns when L is pressed */
             }
             draw_desktop(sel);
         }

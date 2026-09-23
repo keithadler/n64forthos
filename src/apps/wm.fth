@@ -125,6 +125,7 @@ VARIABLE TMP   FIELDS CELLS ALLOT
    NOCLIP ;
 
 VARIABLE DIRTY                         \ has the layout changed?
+VARIABLE REPAINTS                      \ how many times the desk was cleared
 
 : CONTENTS ( i -- )                    \ the inside of one window, no chrome
    LOAD CLIENT
@@ -138,6 +139,7 @@ VARIABLE DIRTY                         \ has the layout changed?
 \ something moves, and between times only the contents are, each inside its
 \ own window where nothing else can see it.
 : REPAINT
+   1 REPAINTS +!                       \ what a window drew is gone now
    0 16 SCREEN-W SCREEN-H 16 - DESK BOX
    S" drag a title bar   red box closes   B leaves"
       16 SCREEN-H 32 - BEHIND DRAW-TEXT

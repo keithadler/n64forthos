@@ -31,7 +31,18 @@ enum {
     P_KEYSET, P_MOUSEX, P_MOUSEY, P_MOUSEB,
     /* what a window manager written in Forth needs from the kernel */
     P_CLIP, P_NOCLIP, P_SETCANVAS, P_POLL, P_BUTTONS, P_PRESSED,
-    P_MOUSEHIT, P_CURSOR, P_HIDECUR, P_TICKS
+    P_MOUSEHIT, P_CURSOR, P_HIDECUR, P_TICKS,
+    /* files, and the prompt as a shell */
+    P_PARSENAME, P_INCLUDE, P_EDIT, P_LOADFILE, P_SAVEFILE, P_DELFILE,
+    P_RENFILE, P_FILEQ, P_NFILES, P_FILENTH, P_DISKFREE, P_DISKSTATE,
+    P_FORMAT, P_MOUNT, P_DOTIOR, P_DOTVOL, P_UNUSED, P_KEY, P_INKEY, P_MS,
+    P_CMOVE, P_RUN,
+    /* the rest of a Forth: defining words, counted loops, CASE, input */
+    P_CREATE, P_DOCREATE, P_DOES, P_PDOES, P_QDOIMM, P_QDO, P_PLOOPIMM,
+    P_PLOOP, P_RECURSE, P_CHAR, P_BRCHAR, P_CASE, P_OF, P_ENDOF, P_ENDCASE,
+    P_ACCEPT, P_TOBODY, P_LEAVEIMM,
+    /* sound */
+    P_BEEP, P_QUIET, P_SOUNDING, P_VOLUME, P_DOTPAREN, P_AGAINBR, P_FINDNAME
 };
 
 #endif /* PRIMS_H */

@@ -58,12 +58,13 @@ FAST_VI = 200              # a sped-up video clock, for the harness only
 FRAME = FAST_VI * 525      # instructions in one of its frames
 PAD_A, PAD_B, PAD_Z, PAD_START = 0x8000, 0x4000, 0x2000, 0x1000
 PAD_UP, PAD_DOWN, PAD_LEFT, PAD_RIGHT = 0x0800, 0x0400, 0x0200, 0x0100
+PAD_L, PAD_R = 0x0020, 0x0010
 
 
 def keymap():
     """The on-screen keyboard layout, read out of src/repl.c so there is one
     copy of it."""
-    src = open("src/repl.c").read()
+    src = open("src/osk.c").read()
     block = re.search(r"keymap\[KB_ROWS\] = \{(.*?)\};", src, re.S).group(1)
     rows = re.findall(r'"((?:[^"\\]|\\.)*)"', block)
     return [r.encode().decode("unicode_escape") for r in rows]
@@ -146,9 +147,10 @@ def run_repl(rom="build/n64forthos.z64"):
     check(m.pads[2] is not None and m.pads[2]["kind"] == "keyboard",
           "a keyboard is on channel 3")
 
-    open_from_desktop(m, 5)                     # the Console
+    open_from_desktop(m, 1)                     # the Console
     lines = screen.decode(m.framebuffer()[2])
-    check(any("d-pad or mouse" in l for l in lines), "the console is up")
+    check(any("Enter run" in l for l in lines),
+          "the console is up, full width for the keyboard")
 
     type_keys(m, "2 3 + .\r")
     m.run(m.icount + 20 * FRAME)
@@ -156,6 +158,10 @@ def run_repl(rom="build/n64forthos.z64"):
     check(any("ok> 2 3 + ." in l for l in lines), "the keyboard typed the line")
     check(any(l[:50].strip() == "5" for l in lines), "Forth answered 5")
 
+    tap(m, PAD_R, gap=20)                       # show the on-screen keyboard
+    lines = screen.decode(m.framebuffer()[2])
+    check(any("d-pad or mouse" in l for l in lines),
+          "R brings up the on-screen keyboard")
     pos = type_text(m, "HELLO")                 # now on the on-screen keyboard
     tap(m, PAD_START, hold=3, gap=10)
     lines = screen.decode(m.framebuffer()[2])
@@ -190,8 +196,12 @@ def run_desktop(rom="build/n64forthos.z64"):
     check("Windows" in text, "the desktop lists the window manager")
     check("Devices" in text, "the desktop lists the devices window")
 
-    # A pointer: put it over the first row and click.
-    m.mouse_move(0, 240 - 128)                  # onto the first row of the list
+    check("Files" in text, "the desktop lists Files")
+    check("Controller Pak: 0 files, 31744 bytes free" in text,
+          "a blank Controller Pak was formatted and mounted")
+
+    # A pointer: put it over Mandelbrot, the third row, and click.
+    m.mouse_move(0, 240 - 176)                  # onto the Mandelbrot row
     m.run(m.icount + 4 * FRAME)
     m.mouse_button(0x8000, True)
     m.run(m.icount + 4 * FRAME)
@@ -259,7 +269,7 @@ def run_wm(rom="build/n64forthos.z64"):
     print(f"{rom}  (the window manager)")
     m = n64emu.load(rom, halfline=FAST_VI)
     m.run(16_000_000)
-    open_from_desktop(m, 4)                     # Windows
+    open_from_desktop(m, 6)                     # Windows
     m.run(m.icount + 60 * FRAME)
     lines = screen.decode(m.framebuffer()[2])
     text = "\n".join(lines)
@@ -283,15 +293,24 @@ def run_wm(rom="build/n64forthos.z64"):
     # movement at a time, so walk it to the title bar in steps.  Positive dy
     # is upwards, the way the hardware reports it.
     # A frame here does real work -- one of the windows is computing a
-    # fractal -- so each step gets long enough for the kernel to poll.
+    # fractal, and a frame of it is some two dozen of this harness's sped-up
+    # video frames -- so each step waits until the kernel has actually read
+    # the movement (reading it zeroes it), rather than guessing how long.
+    def read_by_kernel(m):
+        for _ in range(200):
+            if m.pads[1]["dx"] == 0 and m.pads[1]["dy"] == 0:
+                return
+            m.run(m.icount + 2 * FRAME)
+
     for dx, dy in ((-87, 85), (-87, 85), (-86, 0)):
         m.mouse_move(dx, dy)
-        m.run(m.icount + 12 * FRAME)
+        read_by_kernel(m)
     m.mouse_button(0x8000, True)
-    m.run(m.icount + 12 * FRAME)
+    m.run(m.icount + 40 * FRAME)
     for _ in range(4):                          # carry it right and down
         m.mouse_move(40, -30)
-        m.run(m.icount + 12 * FRAME)
+        read_by_kernel(m)
+        m.run(m.icount + 30 * FRAME)
     m.mouse_button(0x8000, False)
     m.run(m.icount + 12 * FRAME)
     after = close_box(m)
@@ -306,8 +325,10 @@ def run_boot(rom="build/n64forthos.z64"):
     print(f"{rom}  (boot)")
     m = n64emu.load(rom, halfline=FAST_VI)
     first, snapshot = [], []
-    for _ in range(30):                     # catch it mid-handover
-        m.run(m.icount + 500_000)
+    for _ in range(160):                    # catch it mid-handover
+        m.run(m.icount + 125_000)
+        if m.vi[0] & 3 != 2:
+            continue                        # the video is not up yet
         lines = screen.decode(m.framebuffer()[2])
         if any("Hello, World!" in l for l in lines):
             snapshot = lines

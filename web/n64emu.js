@@ -23,6 +23,14 @@ export class N64 {
     this.vi = new Uint32Array(16);
     this.pi = new Uint32Array(8);
     this.pif = new Uint8Array(64);
+    // The audio interface: buffers handed to onAudio(samples, rate) as the
+    // kernel queues them.  It holds two at a time; audioFull(), if the page
+    // sets it, says whether real speakers are behind, and otherwise the
+    // buffers are timed in emulated instructions.
+    this.ai = new Uint32Array(8);
+    this.aiQueue = [];
+    this.onAudio = null;
+    this.audioFull = null;
     this.siDram = 0;
     // The RDP, to the extent this kernel uses it: fill rectangles.
     this.dp = { start: 0, end: 0, colour: 0, img: 0, width: 640 };
@@ -35,8 +43,18 @@ export class N64 {
     // Channel 0 controller, 1 mouse, 2 keyboard: what a BlueRetro adapter
     // can present, and what the page has to offer.
     this.pad = { buttons: 0, x: 0, y: 0 };
+    // A Controller Pak in the controller: 32 KiB, null when there is none.
+    // onPakWrite is told after every write, so the page can keep it.
+    this.pak = new Uint8Array(32768);
+    this.onPakWrite = null;
     this.mouse = { buttons: 0, dx: 0, dy: 0 };
+    this.mouseConnected = true;           // false: nothing on channel 2
     this.keys = [];
+    // Typed text, a key at a time: each one is reported down for one poll
+    // of the keyboard and up for the next, so nothing is lost however long
+    // the kernel takes between polls.
+    this.keyQueue = [];
+    this.keyPhase = 0;
   }
 
   boot() {
@@ -76,6 +94,13 @@ export class N64 {
       return idx === 4 ? 0 : this.pi[idx];
     }
     if (p >= 0x04800000 && p < 0x04800020) return 0;
+    if (p >= 0x04500000 && p < 0x04500018) {
+      const idx = (p - 0x04500000) >> 2;
+      if (idx !== 3) return this.ai[idx];
+      while (this.aiQueue.length && this.aiQueue[0] <= this.icount) this.aiQueue.shift();
+      const full = this.audioFull ? this.audioFull() : this.aiQueue.length >= 2;
+      return ((full ? 0x80000000 : 0) | (this.aiQueue.length ? 0x40000000 : 0)) >>> 0;
+    }
     if (p >= 0x04100000 && p < 0x04100020) {
       const idx = (p - 0x04100000) >> 2;
       return idx === 0 ? this.dp.start : (idx === 1 || idx === 2) ? this.dp.end : 0;
@@ -112,6 +137,12 @@ export class N64 {
       const idx = (p - 0x04100000) >> 2;
       if (idx === 0) this.dp.start = val;
       else if (idx === 1) { this.dp.end = val; this.rdpRun(); }
+      return;
+    }
+    if (p >= 0x04500000 && p < 0x04500018) {
+      const idx = (p - 0x04500000) >> 2;
+      this.ai[idx] = val;
+      if (idx === 1) this.aiDma(val & 0x3fff8);
       return;
     }
     if (p >= 0x04800000 && p < 0x04800020) {
@@ -166,6 +197,22 @@ export class N64 {
     }
   }
 
+  /* ---------------------------------------------------------- audio */
+  aiDma(len) {
+    const rate = 48681812 / ((this.ai[4] & 0x3fff) + 1);
+    const frames = len >> 2;
+    const start = Math.max(this.icount, this.aiQueue.length ? this.aiQueue[this.aiQueue.length - 1] : 0);
+    this.aiQueue.push(start + Math.round(frames / rate * 93.75e6));
+    if (!this.onAudio) return;
+    const samples = new Int16Array(frames * 2), base = this.ai[0] & 0x00fffff8;
+    for (let i = 0; i < frames; i++) {
+      const w = this.ramWords[(base + i * 4) >>> 2];
+      samples[i * 2] = w >> 16;
+      samples[i * 2 + 1] = (w << 16) >> 16;
+    }
+    this.onAudio(samples, rate);
+  }
+
   /* --------------------------------------------------------------- RDP */
   rdpRun() {
     let at = this.dp.start, end = this.dp.end;
@@ -214,11 +261,16 @@ export class N64 {
       const tx = cmd & 0x3f, rx = b[i + 1] & 0x3f;
       const op = tx ? b[i + 2] : 0, resp = i + 2 + tx;
       if (channel === 0) {                       // controller
-        if (op === 0x00 || op === 0xff) { b[resp] = 0x05; b[resp + 1] = 0x00; b[resp + 2] = 0x02; }
-        else if (op === 0x01) {
+        if (op === 0x00 || op === 0xff) {
+          b[resp] = 0x05; b[resp + 1] = 0x00; b[resp + 2] = this.pak ? 0x01 : 0x02;
+        } else if (op === 0x01) {
           b[resp] = (this.pad.buttons >> 8) & 255; b[resp + 1] = this.pad.buttons & 255;
           b[resp + 2] = this.pad.x & 255; b[resp + 3] = this.pad.y & 255;
+        } else if ((op === 0x02 || op === 0x03) && this.pak) {
+          this.pakTransfer(op, i, resp);
         } else b[i + 1] |= 0x40;
+      } else if (channel === 1 && !this.mouseConnected) {
+        b[i + 1] |= 0x80;                        // unplugged
       } else if (channel === 1) {                // mouse
         if (op === 0x00 || op === 0xff) { b[resp] = 0x02; b[resp + 1] = 0x00; b[resp + 2] = 0x00; }
         else if (op === 0x01) {
@@ -229,8 +281,13 @@ export class N64 {
       } else if (channel === 2) {                // keyboard
         if (op === 0x00 || op === 0xff) { b[resp] = 0x00; b[resp + 1] = 0x02; b[resp + 2] = 0x00; }
         else if (op === 0x13) {
+          let codes = this.keys;
+          if (this.keyQueue.length) {
+            if (this.keyPhase === 0) { codes = [this.keyQueue[0]]; this.keyPhase = 1; }
+            else { codes = []; this.keyQueue.shift(); this.keyPhase = 0; }
+          }
           for (let k = 0; k < 3; k++) {
-            const code = this.keys[k] || 0;
+            const code = codes[k] || 0;
             b[resp + k * 2] = (code >> 8) & 255; b[resp + k * 2 + 1] = code & 255;
           }
           b[resp + 6] = 0;
@@ -240,6 +297,54 @@ export class N64 {
       }
       i = resp + rx;
       channel++;
+    }
+  }
+
+  /* ------------------------------------------------ the Controller Pak
+   *
+   * 32 bytes at a time, with the address's own five-bit CRC checked and
+   * the data CRC computed the way the controller does -- so a kernel that
+   * gets either wrong sees a failed transfer here, as it would on hardware.
+   */
+  static addressCrc(addr) {
+    const table = [0, 0, 0, 0, 0, 0x15, 0x1f, 0x0b, 0x16, 0x19, 0x07, 0x0e, 0x1c, 0x0d, 0x1a, 0x01];
+    let crc = 0;
+    for (let i = 15; i >= 5; i--) if ((addr >> i) & 1) crc ^= table[i];
+    return crc & 0x1f;
+  }
+
+  static dataCrc(bytes) {
+    let crc = 0;
+    for (let i = 0; i <= 32; i++) {
+      for (let j = 7; j >= 0; j--) {
+        const top = crc & 0x80;
+        crc = (crc << 1) & 0xff;
+        if (i < 32 && ((bytes[i] >> j) & 1)) crc |= 1;
+        if (top) crc ^= 0x85;
+      }
+    }
+    return crc;
+  }
+
+  pakTransfer(op, i, resp) {
+    const b = this.pif;
+    const word = (b[i + 3] << 8) | b[i + 4];
+    const addr = word & 0xffe0;
+    const good = N64.addressCrc(addr) === (word & 0x1f);
+    if (op === 0x02) {
+      const data = new Uint8Array(32);
+      if (addr < 0x8000) data.set(this.pak.subarray(addr, addr + 32));
+      b.set(data, resp);
+      const crc = N64.dataCrc(data);
+      b[resp + 32] = good ? crc : crc ^ 0xff;
+    } else {
+      const data = b.slice(i + 5, i + 5 + 32);
+      if (good && addr < 0x8000) {
+        this.pak.set(data, addr);
+        if (this.onPakWrite) this.onPakWrite();
+      }
+      const crc = N64.dataCrc(data);
+      b[resp] = good ? crc : crc ^ 0xff;
     }
   }
 

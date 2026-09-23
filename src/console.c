@@ -1,5 +1,7 @@
-/* Text console: an 80x30 grid of 8x16 glyphs drawn straight into the
- * framebuffer.  No backing text buffer - the pixels are the state. */
+/* Text console: a grid of 8x16 glyphs drawn straight into the framebuffer,
+ * with a copy of the text kept beside it, so that whatever paints over the
+ * console -- the editor, the desktop, an app -- can hand the screen back and
+ * the console can put its scrollback where it was. */
 #include <stdarg.h>
 #include "n64.h"
 #include "font.h"
@@ -14,15 +16,20 @@
  * scrolling copies pixels, and anything drawn beside it -- a panel, a window
  * -- would be dragged along with the text.  Everything right of CON_W
  * belongs to whoever drew it. */
-#define COLS 48
 #define ROWS (SCREEN_H / FONT_H)                  /* 30 */
 #define CON_X (MARGIN * FONT_W)                   /* 16 */
-#define CON_W (COLS * FONT_W)                     /* 384 */
+#define CON_W (cols * FONT_W)                     /* 384 at 48 columns */
+
+/* 48 columns leaves the right of the screen to whatever is drawn there; a
+ * prompt with a real keyboard, and no on-screen one, takes 76. */
+static int cols = 48;
 
 extern u16 *fb_uncached(void);
 
 static u16 *fb;
 static u16 fg, bg;
+static char text[ROWS][CON_MAX_COLS];
+static u16 ink[ROWS][CON_MAX_COLS];
 static int cur_row, cur_col;
 static int top_row = 2, bot_row = ROWS - 2;
 
@@ -34,6 +41,33 @@ static void fill(int x, int y, int w, int h, u16 c)
 static void draw_glyph(int row, int col, char ch, u16 f, u16 b)
 {
     gfx_glyph((col + MARGIN) * FONT_W, row * FONT_H, ch, f, b, 1);
+    if (row >= 0 && row < ROWS && col >= 0 && col < CON_MAX_COLS) {
+        text[row][col] = ch;
+        ink[row][col] = f;
+    }
+}
+
+static void forget_row(int row)
+{
+    int c;
+
+    for (c = 0; c < CON_MAX_COLS; c++)
+        text[row][c] = ' ';
+}
+
+/* Paint the console's rows from the copy: after something else has had the
+ * screen, or after the width changed. */
+void con_redraw(void)
+{
+    int r, c;
+
+    gfx_cursor_hide();
+    fill(CON_X, top_row * FONT_H, CON_W, (bot_row - top_row + 1) * FONT_H, bg);
+    for (r = top_row; r <= bot_row; r++)
+        for (c = 0; c < cols; c++)
+            if (text[r][c] != ' ' && text[r][c])
+                gfx_glyph((c + MARGIN) * FONT_W, r * FONT_H, text[r][c],
+                          ink[r][c], bg, 1);
 }
 
 /* The status bar is the width of the screen, not of the console. */
@@ -46,6 +80,10 @@ static void draw_bar_glyph(int col, char ch, u16 f, u16 b)
 
 void con_init(u16 background)
 {
+    int r;
+
+    for (r = 0; r < ROWS; r++)
+        forget_row(r);
     fb = fb_uncached();
     bg = background;
     fg = RGB(200, 210, 225);
@@ -61,11 +99,42 @@ int con_col(void) { return cur_col; }
 
 void con_erase_row(int row)
 {
+    gfx_cursor_hide();
     fill(CON_X, row * FONT_H, CON_W, FONT_H, bg);
+    if (row >= 0 && row < ROWS)
+        forget_row(row);
+}
+
+void con_set_cols(int n)
+{
+    cols = n < 8 ? 8 : n > CON_MAX_COLS ? CON_MAX_COLS : n;
+    if (cur_col > cols)
+        cur_col = cols;
+}
+
+int con_cols(void)
+{
+    return cols;
 }
 
 void con_scroll_region(int top, int bottom)
 {
+    /* A smaller region keeps the bottom of what was there: the lines the
+     * cursor is on, not the oldest ones. */
+    if (cur_row > bottom) {
+        int shift = cur_row - bottom, r, c;
+
+        for (r = top; r <= bottom; r++)
+            for (c = 0; c < CON_MAX_COLS; c++) {
+                int from = r + shift;
+
+                text[r][c] = from < ROWS ? text[from][c] : ' ';
+                ink[r][c] = from < ROWS ? ink[from][c] : fg;
+            }
+        for (r = bottom + 1; r < ROWS; r++)
+            forget_row(r);
+        cur_row = bottom;
+    }
     top_row = top;
     bot_row = bottom;
     if (cur_row < top_row)
@@ -80,8 +149,13 @@ void con_at(int row, int col)
 
 void con_clear(void)
 {
+    int r;
+
+    gfx_cursor_hide();
     fill(CON_X, top_row * FONT_H, CON_W,
          (bot_row - top_row + 1) * FONT_H, bg);
+    for (r = top_row; r <= bot_row; r++)
+        forget_row(r);
     cur_row = top_row;
     cur_col = 0;
 }
@@ -91,21 +165,32 @@ static void scroll(void)
 {
     int y, x;
     int lines = (bot_row - top_row) * FONT_H;
-    u16 *dst = fb + top_row * FONT_H * SCREEN_W + CON_X;
+    /* Two pixels a word: CON_X and CON_W are both even. */
+    u32 *dst = (u32 *)(fb + top_row * FONT_H * SCREEN_W + CON_X);
 
     for (y = 0; y < lines; y++) {
-        u16 *d = dst + y * SCREEN_W;
-        const u16 *s = d + FONT_H * SCREEN_W;
+        u32 *d = dst + y * (SCREEN_W / 2);
+        const u32 *s = d + FONT_H * (SCREEN_W / 2);
 
-        for (x = 0; x < CON_W; x++)
+        for (x = 0; x < CON_W / 2; x++)
             d[x] = s[x];
     }
     fill(CON_X, bot_row * FONT_H, CON_W, FONT_H, bg);
+    for (y = top_row; y < bot_row; y++)
+        for (x = 0; x < CON_MAX_COLS; x++) {
+            text[y][x] = text[y + 1][x];
+            ink[y][x] = ink[y + 1][x];
+        }
+    forget_row(bot_row);
     cur_row = bot_row;
 }
 
 void con_putc(char c)
 {
+    /* The pointer comes down first: scrolling would copy it into the text,
+     * and putting it back later would rub out what was drawn under it.
+     * Whoever showed it shows it again next frame. */
+    gfx_cursor_hide();
     if (c == '\n') {
         cur_col = 0;
         if (++cur_row > bot_row)
@@ -122,7 +207,7 @@ void con_putc(char c)
         } while (cur_col & 7);
         return;
     }
-    if (cur_col >= COLS) {
+    if (cur_col >= cols) {
         cur_col = 0;
         if (++cur_row > bot_row)
             scroll();

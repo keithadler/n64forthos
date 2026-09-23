@@ -205,8 +205,43 @@ void kmain(void)
     con_printf("  DICT   %u KiB at %08x\n",
                forth_dict_size() >> 10, forth_dict_base());
     forth_eval_lines(system_fth);
-    con_printf("  FORTH  %u words, %u compiled, %u refused\n\n",
+    con_printf("  FORTH  %u words, %u compiled, %u refused\n",
                word_count(), native_compiled(), native_refused());
+
+    /* Storage: whatever is in the controller's accessory slot. */
+    input_init();
+    switch (fs_mount()) {
+    case FS_PAK:
+        if (fs_formatted_blank())
+            con_puts("  PAK    a blank pak: formatted it\n");
+        con_printf("  PAK    %u files, %u bytes free\n",
+                   (u32)fs_pak_files(), (u32)fs_free_bytes());
+        break;
+    case FS_RAM:
+        con_puts("  PAK    none: files go on a RAM disk\n");
+        break;
+    case FS_UNFORMATTED:
+        con_puts("  PAK    not formatted: FORMAT to use it\n");
+        break;
+    case FS_CORRUPT:
+        con_puts("  PAK    directory damaged: FORMAT\n");
+        break;
+    default:
+        con_puts("  PAK    not answering\n");
+        break;
+    }
+#ifndef TEST_BUILD
+    /* A BOOT.FTH of your own runs now, before the desktop. */
+    {
+        int vol;
+
+        if (fs_stat("BOOT.FTH", 8, &vol) >= 0 && vol != FS_VOL_ROM) {
+            con_puts("  BOOT   BOOT.FTH\n");
+            forth_include("BOOT.FTH", 8);
+        }
+    }
+#endif
+    con_putc('\n');
 
 #ifdef TEST_BUILD
     (void)i;
@@ -215,6 +250,12 @@ void kmain(void)
     forth_eval_lines(tests_fth);
     con_color(C_DIM);
     con_puts("tests complete\n");
+    /* Stay here, with the results on the screen for whoever reads them:
+     * the desktop would paint over them. */
+    for (;;) {
+        kernel_status_bar();
+        vi_wait_vblank();
+    }
 #else
     for (i = 0; i < sizeof(session) / sizeof(session[0]); i++) {
         con_color(C_DIM);

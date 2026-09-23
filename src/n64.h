@@ -97,7 +97,26 @@ typedef struct {
     u8 present;
 } kbd_t;
 
+/* What input_getchar() returns besides ASCII.  Our emulators send these
+ * codes as they are; a real Randnet keyboard is taught them like any other
+ * key (see the Devices window). */
+#define KEY_ESC    0x1B
+#define KEY_UP     0x80
+#define KEY_DOWN   0x81
+#define KEY_LEFT   0x82
+#define KEY_RIGHT  0x83
+#define KEY_HOME   0x84
+#define KEY_END    0x85
+#define KEY_PGUP   0x86
+#define KEY_PGDN   0x87
+#define KEY_DEL    0x88
+#define CTRL(c)    ((c) & 0x1F)
+
 void input_init(void);
+u8 *input_block(void);
+void input_exchange(void);
+int input_accessory(int n);
+int input_break_check(void);
 void input_poll(void);
 const pad_t *input_pad(int n);
 const mouse_t *input_mouse(void);
@@ -109,8 +128,18 @@ int input_key_mapped(int code);
 u16 input_buttons(int n);
 u16 input_pressed(int n);
 
-/* repl.c -- the prompt, driven by the on-screen keyboard */
+/* repl.c -- the prompt */
 void repl_run(void);
+void repl_run_command(const char *command);
+
+/* osk.c -- the on-screen keyboard, for a controller with no keyboard */
+#define OSK_X 80
+#define OSK_Y 348
+void osk_draw(void);
+void osk_move(u16 dir);
+char osk_selected(void);
+char osk_click(int x, int y);
+u16 osk_direction(void);
 
 /* rdp.c -- rectangle fills, done by the hardware that is good at them */
 void rdp_init(void *framebuffer);
@@ -137,10 +166,14 @@ void gfx_cursor_show(int x, int y, u16 fill, u16 edge);
 void gfx_cursor_hide(void);
 
 /* console.c */
+#define CON_MAX_COLS 76
 void con_init(u16 bg);
+void con_set_cols(int n);
+int con_cols(void);
 void con_color(u16 fg);
 u16 con_get_color(void);
 void con_clear(void);
+void con_redraw(void);
 void con_putc(char c);
 void con_puts(const char *s);
 void con_printf(const char *fmt, ...);
@@ -150,6 +183,64 @@ int con_row(void);
 void con_scroll_region(int top, int bottom);
 void con_erase_row(int row);
 int con_col(void);
+
+/* pak.c -- the Controller Pak, 32 KiB in 32-byte blocks */
+int pak_present(void);
+int pak_read(u16 addr, u8 *out);
+int pak_write(u16 addr, const u8 *data);
+u8 pak_data_crc(const u8 *data);
+
+/* fs.c -- files on ROM and on the Controller Pak (or a RAM disk) */
+#define FS_NAME_MAX 19
+#define FS_DIR_MAX  24
+#define FS_FILE_MAX 31744               /* the pak's data pages, all of them */
+
+#define FS_NONE        0                /* what fs_mount() found */
+#define FS_PAK         1
+#define FS_RAM         2
+#define FS_UNFORMATTED 3
+#define FS_CORRUPT     4
+#define FS_NOANSWER    5
+
+#define FS_VOL_PAK 0
+#define FS_VOL_RAM 1
+#define FS_VOL_ROM 2
+
+#define FS_ENOENT       (-1)            /* errors are negative */
+#define FS_EFULL        (-2)
+#define FS_EDIRFULL     (-3)
+#define FS_ETOOBIG      (-4)
+#define FS_EREADONLY    (-5)
+#define FS_EBADNAME     (-6)
+#define FS_EEXISTS      (-7)
+#define FS_EIO          (-8)
+#define FS_EUNFORMATTED (-9)
+#define FS_ECORRUPT     (-10)
+
+int fs_mount(void);
+int fs_state(void);
+int fs_formatted_blank(void);
+int fs_format(void);
+int fs_name_ok(const char *name, int len);
+int fs_stat(const char *name, int len, int *vol);
+int fs_read(const char *name, int len, char *buf, int max);
+int fs_write(const char *name, int len, const char *buf, int size);
+int fs_delete(const char *name, int len);
+int fs_rename(const char *from, int flen, const char *to, int tlen);
+int fs_count(void);
+int fs_pak_files(void);
+int fs_entry(int n, char *name, int *size, int *vol);
+int fs_free_bytes(void);
+int fs_capacity(void);
+const char *fs_error(int err);
+const char *fs_volume_name(int vol);
+
+/* audio.c -- notes, played in the background */
+int audio_note(int hz, int ms);
+void audio_quiet(void);
+int audio_busy(void);
+void audio_volume(int percent);
+void audio_pump(void);
 
 /* kernel.c */
 void panic(const char *msg);
@@ -180,8 +271,24 @@ u32 native_refused(void);
 void forth_release(u32 mark);
 u32 forth_word_count(void);
 
+int forth_include(const char *name, int len);
+
+/* edit.c -- the text editor */
+#define EDIT_QUIT 0
+#define EDIT_RUN  1
+int edit_file(const char *name, int len);
+
+/* repl.c */
+void repl_repaint(void);
+
 /* desktop.c */
 void desktop_run(void);
+void desktop_run_file(const char *file, const char *title);
+int desktop_open_file(const char *file);
+void console(const char *command);
+
+/* files.c -- the Files window */
+void files_app(void);
 int forth_depth(void);
 
 #endif /* N64_H */

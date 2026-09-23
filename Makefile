@@ -5,6 +5,7 @@
 #   make run      boot it in tools/n64emu.py, save captures/boot.png
 #   make gui      boot it in mupen64plus, in a window
 #   make test     build the test cartridge, boot it, check the results
+#   make ostest   just the file system, editor and shell checks (fast)
 #   make clean
 #
 # The toolchain is Homebrew's LLVM, which targets big-endian MIPS out of the
@@ -32,7 +33,7 @@ CFLAGS  += $(EXTRA)
 LDFLAGS := -T link.ld --no-warnings
 
 CSRC    := src/kernel.c src/video.c src/console.c src/gfx.c src/rdp.c \
-           src/input.c \
+           src/input.c src/pak.c src/fs.c src/audio.c src/osk.c src/edit.c src/files.c \
            src/repl.c src/desktop.c src/forth.c src/native.c
 OBJS    := build/entry.o $(patsubst src/%.c,build/%.o,$(CSRC))
 TOBJS   := build/entry-t.o $(patsubst src/%.c,build/%-t.o,$(CSRC))
@@ -43,7 +44,9 @@ APPSIZE ?= 256
 GEN     := src/font.h src/system_fth.h src/tests_fth.h \
            src/apps/mandel_fth.h src/apps/cornell_fth.h \
            src/apps/navier_fth.h src/apps/life_fth.h \
-           src/apps/wm_fth.h
+           src/apps/wm_fth.h src/apps/readme_txt.h src/apps/hello_fth.h \
+           src/apps/sketch_fth.h src/apps/music_fth.h \
+           src/apps/tasks_fth.h
 
 all: $(ROM)
 
@@ -58,6 +61,9 @@ src/tests_fth.h: test/tests.fth tools/mkboot.py
 
 src/apps/%_fth.h: src/apps/%.fth tools/mkboot.py
 	python3 tools/mkboot.py --raw $< $@ $*_fth
+
+src/apps/%_txt.h: src/apps/%.txt tools/mkboot.py
+	python3 tools/mkboot.py --raw $< $@ $*_txt
 
 build/%.o: src/%.c src/n64.h $(GEN) | build
 	$(CC) $(CFLAGS) -c $< -o $@
@@ -128,14 +134,19 @@ gui: $(ROM)
 serve: $(ROM)
 	python3 serve.py 8795
 
-test: $(ROM) $(TESTROM)
+test: ostest
 	python3 -u tools/check.py
+
+# The operating system's checks -- files, the pak, the editor, the shell --
+# on the browser's emulator under Node: a minute, not ten.
+ostest: $(ROM) $(TESTROM)
+	node tools/ostest.mjs
 
 clean:
 	rm -rf build $(GEN)
 
 INSTR   ?= 40000000
 
-.PHONY: all run gui serve test dbg clean
+.PHONY: all run gui serve test ostest dbg clean
 
-.PRECIOUS: src/apps/%_fth.h
+.PRECIOUS: src/apps/%_fth.h src/apps/%_txt.h

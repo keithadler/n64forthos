@@ -73,6 +73,7 @@
 /* Helpers that live in forth.c, where the interpreter's state is. */
 extern cell *fs_prim(cell *stack, cell code);
 extern cell *fs_call(cell *stack, cell xt);
+extern cell *fs_tick(cell *stack);
 extern cell *fs_type(cell *stack, cell addr, cell len);
 extern cell *fs_do(cell *stack);
 extern cell *fs_index(cell *stack, cell level);
@@ -300,6 +301,15 @@ static int translate(cell xt, cell thread_end, u32 *dest, int words, u32 **end)
         case P_DOVAR:
             emit_imm(R_AT, tok + 4);
             emit_push_reg(R_AT);
+            break;
+
+        case P_DOCREATE:                /* its DOES> part is a thread: */
+            emit(I_MOVE(R_A0, R_T8));   /* let the interpreter run it */
+            emit_imm(R_A1, tok);
+            emit(I_JAL((u32)&fs_call));
+            emit(I_NOP);
+            emit(I_MOVE(R_T8, R_V0));
+            emit_abort_check();
             break;
 
         case P_DUP:
@@ -544,6 +554,18 @@ static int translate(cell xt, cell thread_end, u32 *dest, int words, u32 **end)
             break;
         }
 
+        case P_AGAINBR: {               /* round again, looking for break */
+            cell target = *ip++;
+            u32 *at;
+
+            emit_call((u32)&fs_tick, 1);
+            at = out;
+            emit(I_BEQ(0, 0, 0));
+            emit(I_NOP);
+            want_branch(at, target);
+            break;
+        }
+
         case P_ZBRANCH: {
             cell target = *ip++;
             u32 *at;
@@ -631,7 +653,8 @@ static int translate(cell xt, cell thread_end, u32 *dest, int words, u32 **end)
 
         /* Words that reach into the interpreter itself are left alone. */
         case P_EXECUTE: case P_WORDS: case P_SEE: case P_DUMP:
-        case P_COLON: case P_SEMI: case P_LEAVE:
+        case P_COLON: case P_SEMI: case P_LEAVE: case P_INCLUDE: case P_EDIT: case P_RUN:
+        case P_QDO: case P_PLOOP: case P_PDOES: case P_CREATE: case P_CHAR:
             why = "a word only the interpreter can run";
             return 0;
 

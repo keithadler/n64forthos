@@ -14,13 +14,17 @@ def strip(src):
     out = []
     for line in src.splitlines():
         # A backslash comment runs to the end of the line, but only when the
-        # backslash stands alone as a word.
-        parts = []
+        # backslash stands alone as a word.  The rest of the line keeps its
+        # spacing, which matters inside ." strings.
+        cut = len(line)
+        pos = 0
         for word in line.split():
+            pos = line.index(word, pos)
             if word == "\\":
+                cut = pos
                 break
-            parts.append(word)
-        line = " ".join(parts)
+            pos += len(word)
+        line = line[:cut].strip()
         if line:
             out.append(line)
     return out

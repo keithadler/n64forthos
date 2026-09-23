@@ -84,3 +84,21 @@ icache_invalidate:
     addiu   $a0, $a0, 32
 2:  jr      $ra
     nop
+
+/* fs_loop: what compiled code calls at every LOOP.  Compiled code keeps the
+ * Forth stack pointer in $t8 and does not pass it here, so this saves it
+ * around the C that does the work -- which is free to use $t8 like any
+ * other temporary, and now that it looks for the break key, does. */
+    .text
+    .globl  fs_loop
+    .set    noreorder
+fs_loop:
+    addiu   $sp, $sp, -24
+    sw      $ra, 20($sp)
+    jal     fs_loop_c
+    sw      $t8, 16($sp)            /* delay slot */
+    lw      $t8, 16($sp)
+    lw      $ra, 20($sp)
+    jr      $ra
+    addiu   $sp, $sp, 24            /* delay slot */
+    .set    reorder
