@@ -154,7 +154,7 @@ void kernel_status_bar(void)
     u32 ram_mb = ram_mb_cached;
     u32 frames = vi_frames();
 
-    p = put_str(p, " n64forthos 0.1   VR4300   640x480x16   RDRAM ");
+    p = put_str(p, " n64forthos 0.2   VR4300   640x480x16   RDRAM ");
     p = put_u32(p, ram_mb, 10, 0, ' ');
     p = put_str(p, "M   words ");
     p = put_u32(p, word_count(), 10, 0, ' ');

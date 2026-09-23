@@ -1,5 +1,6 @@
-// osshots.mjs -- the README's pictures of the operating system: the desktop,
-// Files, the editor and SKETCH.FTH, taken from the browser's emulator.
+// osshots.mjs -- the README's pictures, all of them, taken from the
+// browser's emulator: the desktop, Files, the editor, the shell, the apps,
+// the window manager, Tasks and the desk.
 //     node tools/osshots.mjs
 import { Machine, PAD, KEY } from './web.mjs';
 
@@ -76,4 +77,33 @@ d.type('EDIT CUBE.FTH\n'); d.frames(20);
 d.type('\x16\\ cube.fth -- written on the desk\n: CUBE ( n -- n^3 ) DUP DUP * * ;\n: CUBES 6 1 DO I CUBE . LOOP CR ;\nCUBES\n\x16');
 d.type(KEY.ctrl('r')); d.frames(40);
 d.png(OUT + 'desk-edit.png');
-console.log('docs/img: editor.png shell.png desktop.png files.png sketch.png tasks.png desk.png desk-edit.png');
+// The applications, each in its window, run until they have something to
+// show: a picture finished, or a few passes of an animation.
+function app(index, file, done) {
+  const a = new Machine();
+  a.emu.mouseConnected = false;
+  a.frames(90);
+  for (let i = 0; i < index; i++) a.press(PAD.DOWN);
+  a.press(PAD.A); a.frames(60);
+  a.press(PAD.A, 2, 0);
+  for (let f = 0; f < 6000; f += 20) {
+    a.frames(20);
+    if (done(a.text())) break;
+  }
+  a.frames(2);
+  a.png(OUT + file);
+}
+app(2, 'app-mandel.png', (t) => t.includes('drawn in'));
+app(3, 'app-cornell.png', (t) => t.includes('drawn in'));
+app(4, 'app-navier.png', (t) => /pass [3-9]/.test(t));
+app(5, 'app-life.png', (t) => /pass [2-9]\d/.test(t));
+
+// The window manager, as it opens.
+const w = new Machine();
+w.emu.mouseConnected = false;
+w.frames(90);
+for (let i = 0; i < 6; i++) w.press(PAD.DOWN);
+w.press(PAD.A); w.frames(240);
+w.png(OUT + 'wm.png');
+
+console.log('docs/img: all of them');
