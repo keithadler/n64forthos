@@ -85,6 +85,8 @@ static const app_t apps[] = {
       APP_FULL },
     { "Tasks", "Mandelbrot, Life and Navier-Stokes at once, in windows",
       "TASKS.FTH", APP_FULL },
+    { "Desk", "a prompt in a window: OPEN programs beside it",
+      "DESK.FTH", APP_FULL },
     { "Devices", "what is plugged in, and teaching it the keyboard", 0,
       APP_DEVICES },
 };
@@ -168,8 +170,8 @@ static void draw_storage(void)
         break;
     }
     *p = 0;
-    gfx_box(56, 416, 528, 16, c_win);
-    text_at(56, 416, line, fs_state() == FS_PAK ? c_dim : c_amber);
+    gfx_box(56, 432, 528, 16, c_win);
+    text_at(56, 432, line, fs_state() == FS_PAK ? c_dim : c_amber);
 }
 
 static void draw_desktop(int sel)
@@ -425,19 +427,31 @@ static void full_app(const char *source)
     forth_set_canvas(0, 16, SCREEN_W, SCREEN_H - 16);
     forth_eval_lines(source);
     forth_call("START");
+    forth_screen_taken();
+    forth_quit_requested();
+    forth_keyboard_break(1);            /* until a prompt in a window says */
 
     for (;;) {
+        int leave;
+
         input_poll();
-        if (pressed_now() & PAD_B) {
-            gfx_cursor_hide();
-            gfx_noclip();
-            forth_release(mark);
-            forth_set_canvas(0, 0, SCREEN_W, SCREEN_H);
-            return;
-        }
+        /* B, BYE, or Escape -- unless a prompt in one of its windows is
+         * taking the keys, in which case Escape is theirs. */
+        leave = (input_pressed(0) & PAD_B) || forth_quit_requested();
         if (!forth_call("FRAME")) {
             gfx_noclip();
             con_puts("the application stopped; B to leave\n");
+            leave = 1;
+        }
+        if (!console_has_keys()) {      /* nobody in a window is typing */
+            forth_keyboard_break(1);
+            if (!leave && input_getchar() == KEY_ESC)
+                leave = 1;
+        }
+        if (leave || forth_quit_requested()) {
+            gfx_cursor_hide();
+            gfx_noclip();
+            forth_keyboard_break(1);
             forth_release(mark);
             forth_set_canvas(0, 0, SCREEN_W, SCREEN_H);
             return;
@@ -634,8 +648,12 @@ static int token_is(const char *t, int n, const char *word)
 }
 
 /* Does the source define this word -- as a colon definition, a constant or
- * a variable?  Read token by token, the way Forth would. */
-static int defines(const char *src, const char *word)
+ * a variable -- itself, or in a file it INCLUDEs?  Read token by token, the
+ * way Forth would.  A desk that INCLUDEs the window manager has a FRAME. */
+#define SCAN_DEPTH 2
+static char scan_buf[SCAN_DEPTH][FS_FILE_MAX + 1];
+
+static int defines_at(const char *src, const char *word, int depth)
 {
     const char *p = src, *prev = 0;
     int prev_n = 0;
@@ -656,12 +674,26 @@ static int defines(const char *src, const char *word)
             (token_is(prev, prev_n, ":") || token_is(prev, prev_n, "CONSTANT") ||
              token_is(prev, prev_n, "VARIABLE")))
             return 1;
+        if (prev && token_is(prev, prev_n, "INCLUDE") && depth < SCAN_DEPTH) {
+            int k = fs_read(t, n, scan_buf[depth], FS_FILE_MAX);
+
+            if (k >= 0) {
+                scan_buf[depth][k] = 0;
+                if (defines_at(scan_buf[depth], word, depth + 1))
+                    return 1;
+            }
+        }
         if (token_is(t, n, "\\"))           /* a comment: skip the line */
             while (*p && *p != '\n')
                 p++;
         prev = t;
         prev_n = n;
     }
+}
+
+static int defines(const char *src, const char *word)
+{
+    return defines_at(src, word, 0);
 }
 
 /* Open a file as an application if it is one; 0 if it is not, and the

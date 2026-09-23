@@ -5,13 +5,14 @@
 \ which one is in front, what happens when you drag a title bar --
 \ is here, in the language the machine speaks.
 \
-\ A window is seven cells: x, y, width, height, the address and
-\ length of its title, and the word that draws its contents.  That
-\ word runs with the canvas set to the window's inside and the clip
-\ set to match, so it cannot draw anywhere else even if it tries.
+\ A window is eight cells: x, y, width, height, the address and
+\ length of its title, the word that draws its contents, and a cell
+\ for that word, which finds it in THIS.  The word runs with the
+\ canvas set to the window's inside and the clip set to match, so
+\ it cannot draw anywhere else even if it tries.
 
-   6 CONSTANT MAX-WINS
-   7 CONSTANT FIELDS
+   8 CONSTANT MAX-WINS
+   8 CONSTANT FIELDS
   16 CONSTANT BAR                      \ a title bar is one row of text
   14 CONSTANT SHUT                     \ width of the close box
 
@@ -38,6 +39,8 @@ VARIABLE WAS-DOWN
 : >TITLE ( i -- a ) WIN 4 CELLS + ;
 : >TLEN ( i -- a )  WIN 5 CELLS + ;
 : >DRAW ( i -- a )  WIN 6 CELLS + ;
+: >DATA ( i -- a )  WIN 7 CELLS + ;
+VARIABLE THIS                          \ the data of the window being drawn
 
 VARIABLE WX  VARIABLE WY  VARIABLE WW  VARIABLE WH
 : LOAD ( i -- i )
@@ -63,13 +66,14 @@ VARIABLE NT VARIABLE NL VARIABLE ND
       NW @ OVER >W !   NH @ OVER >H !
       NT @ OVER >TITLE !  NL @ OVER >TLEN !
       ND @ OVER >DRAW !
+      0 OVER >DATA !
       DROP
       1 #WINS +!
    THEN ;
 
 VARIABLE TMP   FIELDS CELLS ALLOT
 
-: COPY-WIN ( from to -- )              \ seven cells, either way
+: COPY-WIN ( from to -- )              \ a whole record, either way
    FIELDS 0 DO
       OVER I CELLS + @
       OVER I CELLS + !
@@ -121,6 +125,7 @@ VARIABLE TMP   FIELDS CELLS ALLOT
    CLIENT
    CX @ CY @ CW @ CH @ CLIP
    CX @ CY @ CW @ CH @ SET-CANVAS
+   DUP >DATA @ THIS !
    >DRAW @ EXECUTE
    NOCLIP ;
 
@@ -131,6 +136,7 @@ VARIABLE REPAINTS                      \ how many times the desk was cleared
    LOAD CLIENT
    CX @ CY @ CW @ CH @ CLIP
    CX @ CY @ CW @ CH @ SET-CANVAS
+   DUP >DATA @ THIS !
    >DRAW @ EXECUTE
    NOCLIP ;
 
@@ -146,8 +152,25 @@ VARIABLE REPAINTS                      \ how many times the desk was cleared
    #WINS @ 0 DO I PAINT LOOP
    0 DIRTY ! ;
 
+\ A window with another over it is left alone between repaints: its
+\ contents would be drawn inside its own edges, but those edges run
+\ under the window in front.  It carries on when it is uncovered.
+VARIABLE AX  VARIABLE AY  VARIABLE AW  VARIABLE AH
+: OVERLAP? ( i j -- flag )             \ do their rectangles meet?
+   LOAD DROP  WX @ AX !  WY @ AY !  WW @ AW !  WH @ AH !
+   LOAD DROP
+   AX @  WX @ WW @ +  <
+   WX @  AX @ AW @ +  <  AND
+   AY @  WY @ WH @ +  <  AND
+   WY @  AY @ AH @ +  <  AND ;
+: COVERED? ( i -- flag )
+   #WINS @ OVER 1+ ?DO
+      DUP I OVERLAP? IF DROP TRUE UNLOOP EXIT THEN
+   LOOP
+   DROP FALSE ;
+
 : REDRAW-CONTENTS
-   #WINS @ 0 DO I CONTENTS LOOP ;
+   #WINS @ 0 DO I COVERED? 0= IF I CONTENTS THEN LOOP ;
 
 \ --- the mouse -------------------------------------------------------------
 VARIABLE HIT

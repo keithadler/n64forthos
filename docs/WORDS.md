@@ -194,12 +194,26 @@ so a copy saved there stands in for the ROM file of the same name. Names are
 | `.VOL` | `( vol -- )` | PAK, RAM or ROM |
 | `PARSE-NAME` | `( -- c-addr u )` | the next word of the line being read |
 | `FIND-NAME` | `( c-addr u -- xt \| 0 )` | the newest word by that name, if any |
+| `INCLUDED` | `( c-addr u -- flag )` | include a file from running code, on stacks of its own |
+| `LATEST@` | `( -- h )` | the newest word's header |
+| `LATEST!` | `( h -- )` | make an older word the newest: what came after is hidden, not freed |
+| `FILES` | `( -- )` | the Files window, then back |
+| `CONSOLE` | `( repaints focused -- status )` | one frame of a prompt, in the canvas it is lent: 1 the screen was taken, 2 ^O |
+| `EDIT-OPEN` | `( c-addr u -- ior )` | open a file for the editor in a window |
+| `EDITOR` | `( repaints focused -- status )` | one frame of it: 1 closed, 2 ^O, 4 ^R |
+| `EDITED` | `( -- c-addr u )` | the name of the file it has open |
+| `BYE` | `( -- )` | leave the prompt, or the full-screen app it is in |
+
+The desk (`DESK.FTH`) adds `OPEN name`, which includes a file and, if it is
+an app, gives it a window of its own, and its own `EDIT name`, which opens
+the editor in a window rather than over the whole screen.
 | `CMOVE` | `( from to n -- )` | copy bytes |
 | `UNUSED` | `( -- n )` | dictionary bytes left |
 
 An ior is 0 for success and negative otherwise: -1 no such file, -2 no room,
 -3 directory full, -4 too big, -5 read-only (ROM), -6 bad name, -7 exists,
--8 the pak did not answer, -9 not formatted, -10 damaged.
+-8 the pak did not answer, -9 not formatted, -10 damaged, -11 another file
+is open in the editor and not saved.
 
 Three words run other source, so they work at the prompt (or in a file being
 included) but not inside a definition:

@@ -40,6 +40,7 @@
 #include "apps/sketch_fth.h"
 #include "apps/music_fth.h"
 #include "apps/tasks_fth.h"
+#include "apps/desk_fth.h"
 
 #define VOL_BYTES   32768
 #define PAGE        256
@@ -85,6 +86,7 @@ static const romfile_t rom[] = {
     { "LIFE.FTH", life_fth },
     { "WM.FTH", wm_fth },
     { "TASKS.FTH", tasks_fth },
+    { "DESK.FTH", desk_fth },
 };
 #define NROM ((int)(sizeof(rom) / sizeof(rom[0])))
 
@@ -670,6 +672,7 @@ const char *fs_error(int err)
     case FS_EIO:          return "the Controller Pak did not answer properly";
     case FS_EUNFORMATTED: return "the Controller Pak is not formatted: FORMAT";
     case FS_ECORRUPT:     return "the Controller Pak's directory is damaged";
+    case FS_EBUSY:        return "another file is open in the editor, not saved";
     default:              return "file error";
     }
 }

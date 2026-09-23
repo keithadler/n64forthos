@@ -205,6 +205,107 @@ console.log('three programs at once');
         `and Life and Navier-Stokes are both still moving (${changed(lifeA, lifeB)}, ${changed(navA, navB)})`);
 }
 
+console.log('a prompt in a window, beside running programs');
+{
+  const m = new Machine();
+  m.emu.mouseConnected = false;
+  m.frames(90);
+  for (let i = 0; i < 7; i++) m.press(PAD.DOWN);
+  m.press(PAD.A); m.frames(200);
+  const prompt = () => m.lines().slice(18, 28).map((l) => l.replace(/\u2591/g, ' ')).join('\n');
+  const life = () => { const a = []; for (let y = 72; y < 256; y += 3) for (let x = 230; x < 414; x += 3) a.push(m.pixel(x, y)); return a; };
+  m.type('PAGE 2 3 + .\n'); m.frames(5);
+  check(/\n\s*5\s*\n/.test(prompt()), 'a line typed in the window runs there');
+  m.type('1 2 3\n'); m.type('+ + .\n'); m.frames(5);
+  check(/\n\s*6\s*\n/.test(prompt()), 'and the stack carries from one line to the next');
+  const before = life();
+  m.type('PAGE NOPE\n'); m.frames(5);
+  check(prompt().includes('undefined: NOPE'), 'an error is reported in the window');
+  m.type('7 6 * .\n'); m.frames(60);
+  check(/\n\s*42\s*\n/.test(prompt()), 'and the desk and its prompt carry on');
+  check(life().filter((p, i) => p !== before[i]).length > 50, 'Life kept going while we typed');
+  m.type(KEY.ESC); m.frames(20);
+  check(m.text().includes('LIFE.FTH'), 'Esc typed at the prompt does not leave the desk');
+  m.type('PAGE : SPIN BEGIN AGAIN ; SPIN\n', 0); m.frames(30);
+  m.type(KEY.ctrl('c'), 0); m.frames(40);
+  m.type('9 9 * .\n'); m.frames(10);
+  check(prompt().includes('interrupted') && /\n\s*81\s*\n/.test(prompt()) &&
+        m.text().includes('LIFE.FTH'), '^C stops a command at the prompt, not the desk');
+  m.type('EDIT DESKNOTE.TXT\n'); m.frames(20);
+  check(m.lines()[3].includes('DESKNOTE.TXT') && m.text().includes('a new file'),
+        'EDIT from the window prompt opens the editor in a window of its own');
+  m.type('written from the desk\n'); m.type(KEY.ctrl('s')); m.type(KEY.ESC); m.frames(40);
+  check(m.text().includes('MANDEL.FTH') && m.text().includes('prompt'),
+        'and leaving it puts the desk back');
+  m.type('BYE\n'); m.frames(30);
+  check(m.text().includes('Pick something'), 'BYE goes back to the desktop');
+}
+
+console.log('the desk: the window manager as a shell');
+{
+  const m = new Machine();
+  m.emu.mouseConnected = false;
+  m.frames(90);
+  for (let i = 0; i < 8; i++) m.press(PAD.DOWN);
+  m.press(PAD.A); m.frames(60);
+  const prompt = () => m.lines().slice(18, 28).map((l) => l.replace(/\u2591/g, ' ')).join('\n');
+  check(m.text().includes('prompt') && !m.text().includes('LIFE.FTH'), 'the desk opens with a prompt');
+  m.type('OPEN LIFE.FTH\n'); m.frames(60);
+  check(m.text().includes('LIFE.FTH'), 'OPEN puts an app in a window of its own');
+  m.type('PAGE OPEN HELLO.FTH\n'); m.frames(30);
+  check(prompt().includes('Hello from a file') && !m.text().includes(' HELLO.FTH  '),
+        'a file that is not an app just runs, at the prompt');
+  m.type('PAGE OPEN NOSUCH.FTH\n'); m.frames(20);
+  m.type('6 7 * .\n'); m.frames(20);
+  check(prompt().includes('no such file') && /\n\s*42\s*\n/.test(prompt()),
+        'a missing file is an error, and the desk carries on');
+  m.type('OPEN MANDEL.FTH\n'); m.frames(60);
+  m.type('PAGE DEPTH . 2 3 + .\n'); m.frames(20);
+  check(/\n\s*0 5\s*\n/.test(prompt()),
+        "the apps' own words (Mandelbrot's DEPTH) stay out of the prompt's way");
+  m.type('FILES\n'); m.frames(30);
+  check(m.text().includes('Controller Pak:') && m.text().includes('bytes free'),
+        'FILES brings up the Files window');
+  m.press(PAD.B); m.frames(30);
+  check(m.text().includes('LIFE.FTH') && m.text().includes('MANDEL.FTH') && m.text().includes('prompt'),
+        'and B comes back to the desk as it was');
+  m.type('EDIT CUBE.FTH\n'); m.frames(20);
+  check(m.text().includes('CUBE.FTH') && m.text().includes('a new file') &&
+        m.text().includes('prompt'), 'EDIT on the desk opens the editor in a window');
+  m.type(': CUBE DUP DUP * * ;\n.( cubed: ) 3 CUBE . CR\n');
+  m.type(KEY.ctrl('r')); m.frames(30);
+  check(prompt().includes('cubed: 27'), '^R saves it and runs it at the prompt');
+  m.type(KEY.ctrl('o')); m.frames(10);
+  m.type('5 CUBE .\n'); m.frames(10);
+  check(/\n\s*125\s*\n/.test(prompt()), '^O gives the prompt the keys, and CUBE is there to use');
+  m.type(KEY.ctrl('o')); m.frames(10);
+  m.type('\\ a comment\n'); m.type(KEY.ctrl('s')); m.type(KEY.ESC); m.frames(20);
+  check(!m.lines()[3].includes('CUBE.FTH') && m.text().includes('prompt'),
+        'and back to the editor, which saves and closes');
+  m.type('CAT CUBE.FTH\n'); m.frames(20);
+  check(prompt().includes('a comment'), 'with everything typed in it on the pak');
+  m.type('BYE\n'); m.frames(30);
+  check(m.text().includes('Pick something'), 'BYE leaves the desk');
+}
+
+console.log('the desk as the shell, from BOOT.FTH');
+{
+  let m = new Machine();
+  toConsole(m);
+  m.type('EDIT BOOT.FTH\n'); m.frames(10);
+  m.type('RUN DESK.FTH\n'); m.type(KEY.ctrl('s')); m.type(KEY.ESC); m.frames(10);
+  const pak = m.emu.pak;
+  m = new Machine(undefined, { pak });
+  m.emu.mouseConnected = false;
+  m.frames(150);
+  check(m.text().includes('prompt') && m.text().includes('red box closes') &&
+        !m.text().includes('Pick something'), 'with RUN DESK.FTH in BOOT.FTH, the machine starts on the desk');
+  m.type('OPEN LIFE.FTH\n'); m.frames(40);
+  check(m.text().includes('LIFE.FTH'), 'and it works as one');
+  m.type('BYE\n'); m.frames(30);
+  check(m.text().includes('Pick something'), 'BYE from it reaches the desktop');
+}
+
 console.log('an animation that runs for ever');
 {
   const m = new Machine();

@@ -24,6 +24,8 @@ AT THE PROMPT
   COPY FROM TO        copy one
   FORMAT              format the Controller Pak (asks first)
   MEM                 memory and disk space
+  FILES               the Files window
+  BYE                 back to the desktop
   HELP                a short list of all this
   WORDS               every word the system knows
 
@@ -58,6 +60,13 @@ An ior of 0 means it worked; .IOR prints what any other means.
 An app is a file that defines ROWS and ROW (and, if it animates,
 NEXT): it opens in a window with its source beside it. One that
 defines FRAME owns the whole screen. TASKS.FTH runs three apps
-at once, each in a window of the window manager. SKETCH.FTH is a small app
+at once, each in a window of the window manager.
+
+THE DESK
+DESK.FTH is a prompt in a window. OPEN NAME puts an app in a
+window beside it, and they all run while you type. EDIT NAME opens
+the editor in a window: ^R runs the file at the prompt, and ^O
+moves the keys between the editor and the prompt. RUN DESK.FTH
+in your BOOT.FTH starts the machine on it. BYE or B leaves. SKETCH.FTH is a small app
 that keeps its picture in a file; MUSIC.FTH plays a tune in the
 background; HELLO.FTH is a place to start.

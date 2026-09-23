@@ -103,6 +103,37 @@ is in, its `ROW` is the newest `ROW`, and that is the one captured (with
 
 ![three programs at once](docs/img/tasks.png)
 
+**The window manager as a shell.** **Desk** ([`src/apps/desk.fth`](src/apps/desk.fth))
+is a prompt in a window, with `OPEN LIFE.FTH` putting any app in a window
+beside it -- while the prompt carries on. `EDIT` opens the editor in a
+window of its own: write a program there, ^R runs it at the prompt below,
+^O (or a click) moves the keys between the two, and the words it defined
+are the prompt's to use. Everything else the prompt can do (`DIR`, `RUN`,
+`FILES`, your own words) it does here. `RUN DESK.FTH` in a `BOOT.FTH` makes
+it the machine's shell. Three things make it work:
+
+- **A prompt and an editor that are one frame at a time**
+  ([`src/repl.c`](src/repl.c) `repl_window_step`, [`src/edit.c`](src/edit.c)
+  `edit_window_step`): the console and the editor can be anywhere now, and
+  `CONSOLE` and `EDITOR` run one frame of them inside whatever window calls
+  them. A window with another on top of it waits until it is uncovered
+  rather than drawing into the one in front.
+- **Stack floors.** A line typed there is evaluated from inside the running
+  window manager, on stacks of its own stacked above the manager's; an
+  error, or ^C, unwinds only that line, and what it leaves on the stack is
+  kept for the next one as at any prompt. `INCLUDED` does the same for a
+  file brought in by running code, which is how `OPEN` compiles an app
+  without stopping the desk.
+- **Namespaces, of a sort.** Once `OPEN` has captured an app's `ROW`,
+  `ROWS`, `START` and `NEXT`, it resets the dictionary's search chain to
+  where it was (`LATEST!`), so the app's words stay in memory and keep
+  working but no longer stand in front of anything at the prompt --
+  Mandelbrot's `DEPTH` and the window manager's `INK` do not shadow Forth's.
+  The desk hides its own words the same way and shows the prompt `OPEN`.
+
+![the desk](docs/img/desk.png)
+![writing a program on the desk](docs/img/desk-edit.png)
+
 **Programs that keep their data.** [`src/apps/sketch.fth`](src/apps/sketch.fth)
 is a paint program in 90 lines of Forth that saves its picture as
 `SKETCH.PIC` and finds it again after the power has been off.
@@ -492,10 +523,10 @@ It is the last large multiplier, and taking it would mean the applications
 stop being Forth you can read in the window beside the picture — which is why
 it was not taken.
 
-**The window manager is an application, not the shell.** Tasks shows it can
-host the applications -- they already run in its windows -- but the console,
-Files and the editor are still loops that own the screen, and making them
-windows is the step after.
+**Files is still full-screen.** The desk runs the prompt, the editor and the
+applications in windows, and brings Files up over the whole screen; making
+it a window as well is the step after. And the desk is cooperative: a line that runs for
+a long time holds everything else up until it finishes or is broken.
 
 ## Licence
 

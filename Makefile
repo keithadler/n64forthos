@@ -46,7 +46,7 @@ GEN     := src/font.h src/system_fth.h src/tests_fth.h \
            src/apps/navier_fth.h src/apps/life_fth.h \
            src/apps/wm_fth.h src/apps/readme_txt.h src/apps/hello_fth.h \
            src/apps/sketch_fth.h src/apps/music_fth.h \
-           src/apps/tasks_fth.h
+           src/apps/tasks_fth.h src/apps/desk_fth.h
 
 all: $(ROM)
 

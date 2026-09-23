@@ -655,6 +655,7 @@ static int translate(cell xt, cell thread_end, u32 *dest, int words, u32 **end)
         case P_EXECUTE: case P_WORDS: case P_SEE: case P_DUMP:
         case P_COLON: case P_SEMI: case P_LEAVE: case P_INCLUDE: case P_EDIT: case P_RUN:
         case P_QDO: case P_PLOOP: case P_PDOES: case P_CREATE: case P_CHAR:
+        case P_INCLUDED: case P_FILES: case P_CONSTEP: case P_EDITOR:
             why = "a word only the interpreter can run";
             return 0;
 
@@ -743,12 +744,10 @@ int native_compile(cell xt, cell thread_end)
 
     why = 0;
     if (!translate(xt, thread_end, dest, room, &end)) {
+        /* Not an error: the word runs interpreted, as it always could.
+         * Said nothing about, since every word that uses EXECUTE or DOES>
+         * would otherwise announce it; the boot log counts them. */
         refused_words++;
-        con_puts("not compiled: ");
-        forth_name_of(xt);
-        con_puts(" -- ");
-        con_puts(why ? why : "no reason recorded");
-        con_putc('\n');
         return 0;
     }
 
@@ -757,4 +756,11 @@ int native_compile(cell xt, cell thread_end)
     forth_set_here((u32)end);
     compiled_words++;
     return 1;
+}
+
+/* Why the last word the generator looked at stayed interpreted, if it did:
+ * for a debugger, or a Forth word that wants to say. */
+const char *native_last_refusal(void)
+{
+    return why ? why : "";
 }

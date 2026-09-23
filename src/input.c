@@ -241,6 +241,11 @@ void input_poll(void)
 
     mouse.edges = 0;
     kbd.nkeys = 0;
+    /* Present means answering now: an adapter can stop presenting one. */
+    mouse.present = 0;
+    for (ch = 0; ch < 4; ch++)
+        if (kind[ch] == DEV_MOUSE)
+            mouse.present = 1;
 
     for (ch = 0; ch < 4; ch++) {
         u8 *r;
@@ -319,7 +324,7 @@ void input_poll(void)
  * go into the typeahead as usual) and controllers, never a mouse, whose
  * movement is consumed by reading it, and without touching the edges the
  * next input_poll() will report. */
-int input_break_check(void)
+int input_break_check(int keyboard_breaks)
 {
     u8 *p = b();
     int ch, at = 0, off[4], hit = 0;
@@ -382,7 +387,7 @@ int input_break_check(void)
                 c = input_key_mapped(keys[i]);
                 if (!fresh || !c)
                     continue;
-                if (c == KEY_ESC || c == CTRL('C'))
+                if (keyboard_breaks && (c == KEY_ESC || c == CTRL('C')))
                     hit = 1;
                 else if (((typed_tail + 1) % TYPEAHEAD) != typed_head) {
                     typed[typed_tail] = (u8)c;

@@ -132,7 +132,7 @@ VARIABLE FBUF  31744 ALLOT              \ a file's worth of room
    CYAN INK ." Files" WHITE INK CR
    2 SPACES ." DIR  CAT name  EDIT name  RUN name" CR
    2 SPACES ." INCLUDE name  DEL name  REN old new" CR
-   2 SPACES ." COPY from to  FORMAT  MEM" CR
+   2 SPACES ." COPY from to  FORMAT  MEM  FILES  BYE" CR
    CYAN INK ." Forth" WHITE INK CR
    2 SPACES ." WORDS  SEE name  FORGET name  .S" CR
    2 SPACES ." Esc, ^C or START+Z stops a program" CR

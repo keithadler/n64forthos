@@ -17,8 +17,12 @@
  * -- would be dragged along with the text.  Everything right of CON_W
  * belongs to whoever drew it. */
 #define ROWS (SCREEN_H / FONT_H)                  /* 30 */
-#define CON_X (MARGIN * FONT_W)                   /* 16 */
+#define CON_X org_x                               /* 16, full screen */
 #define CON_W (cols * FONT_W)                     /* 384 at 48 columns */
+
+/* Where the console's column 0 and row 0 are on the screen.  Full screen,
+ * two cells in from the left; in a window, wherever the window is. */
+static int org_x = MARGIN * FONT_W, org_y;
 
 /* 48 columns leaves the right of the screen to whatever is drawn there; a
  * prompt with a real keyboard, and no on-screen one, takes 76. */
@@ -40,7 +44,7 @@ static void fill(int x, int y, int w, int h, u16 c)
 
 static void draw_glyph(int row, int col, char ch, u16 f, u16 b)
 {
-    gfx_glyph((col + MARGIN) * FONT_W, row * FONT_H, ch, f, b, 1);
+    gfx_glyph(org_x + col * FONT_W, org_y + row * FONT_H, ch, f, b, 1);
     if (row >= 0 && row < ROWS && col >= 0 && col < CON_MAX_COLS) {
         text[row][col] = ch;
         ink[row][col] = f;
@@ -62,11 +66,12 @@ void con_redraw(void)
     int r, c;
 
     gfx_cursor_hide();
-    fill(CON_X, top_row * FONT_H, CON_W, (bot_row - top_row + 1) * FONT_H, bg);
+    fill(CON_X, org_y + top_row * FONT_H, CON_W,
+         (bot_row - top_row + 1) * FONT_H, bg);
     for (r = top_row; r <= bot_row; r++)
         for (c = 0; c < cols; c++)
             if (text[r][c] != ' ' && text[r][c])
-                gfx_glyph((c + MARGIN) * FONT_W, r * FONT_H, text[r][c],
+                gfx_glyph(org_x + c * FONT_W, org_y + r * FONT_H, text[r][c],
                           ink[r][c], bg, 1);
 }
 
@@ -100,10 +105,23 @@ int con_col(void) { return cur_col; }
 void con_erase_row(int row)
 {
     gfx_cursor_hide();
-    fill(CON_X, row * FONT_H, CON_W, FONT_H, bg);
+    fill(CON_X, org_y + row * FONT_H, CON_W, FONT_H, bg);
     if (row >= 0 && row < ROWS)
         forget_row(row);
 }
+
+/* Put the console somewhere else: its column 0 and row 0 at (x, y), this
+ * many columns, and rows top to bottom.  The text comes along. */
+void con_place(int x, int y, int ncols, int top, int bottom)
+{
+    org_x = x;
+    org_y = y;
+    con_set_cols(ncols);
+    con_scroll_region(top, bottom);
+}
+
+int con_origin_x(void) { return org_x; }
+int con_origin_y(void) { return org_y; }
 
 void con_set_cols(int n)
 {
@@ -152,7 +170,7 @@ void con_clear(void)
     int r;
 
     gfx_cursor_hide();
-    fill(CON_X, top_row * FONT_H, CON_W,
+    fill(CON_X, org_y + top_row * FONT_H, CON_W,
          (bot_row - top_row + 1) * FONT_H, bg);
     for (r = top_row; r <= bot_row; r++)
         forget_row(r);
@@ -165,17 +183,28 @@ static void scroll(void)
 {
     int y, x;
     int lines = (bot_row - top_row) * FONT_H;
-    /* Two pixels a word: CON_X and CON_W are both even. */
-    u32 *dst = (u32 *)(fb + top_row * FONT_H * SCREEN_W + CON_X);
+    u16 *base = fb + (org_y + top_row * FONT_H) * SCREEN_W + CON_X;
 
-    for (y = 0; y < lines; y++) {
-        u32 *d = dst + y * (SCREEN_W / 2);
-        const u32 *s = d + FONT_H * (SCREEN_W / 2);
+    if (!(CON_X & 1)) {                 /* two pixels a word */
+        u32 *dst = (u32 *)base;
 
-        for (x = 0; x < CON_W / 2; x++)
-            d[x] = s[x];
+        for (y = 0; y < lines; y++) {
+            u32 *d = dst + y * (SCREEN_W / 2);
+            const u32 *s = d + FONT_H * (SCREEN_W / 2);
+
+            for (x = 0; x < CON_W / 2; x++)
+                d[x] = s[x];
+        }
+    } else {                            /* a window at an odd x */
+        for (y = 0; y < lines; y++) {
+            u16 *d = base + y * SCREEN_W;
+            const u16 *s = d + FONT_H * SCREEN_W;
+
+            for (x = 0; x < CON_W; x++)
+                d[x] = s[x];
+        }
     }
-    fill(CON_X, bot_row * FONT_H, CON_W, FONT_H, bg);
+    fill(CON_X, org_y + bot_row * FONT_H, CON_W, FONT_H, bg);
     for (y = top_row; y < bot_row; y++)
         for (x = 0; x < CON_MAX_COLS; x++) {
             text[y][x] = text[y + 1][x];

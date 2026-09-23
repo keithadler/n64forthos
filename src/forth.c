@@ -45,6 +45,11 @@ static cell *const dstack = dstack_area + DGUARD;
 static int dsp;
 static cell rstack[RSTACK_MAX];
 static int rsp;
+/* Where the stacks begin for whatever is being interpreted now.  Zero,
+ * except while a prompt in a window evaluates a line from inside a running
+ * program: then that line's stacks sit on top of the program's, and an
+ * error unwinds them only this far. */
+static int dfloor, rfloor;
 static cell cstack[CSTACK_MAX];
 /* Marks on the control stack that are not addresses: what ?DO and CASE
  * leave for LOOP and ENDCASE to find. */
@@ -63,8 +68,12 @@ static int base = 10;
 static int aborted;
 static int interrupted;         /* the break key: stop the whole file too */
 static u32 ticks;
+static int keyboard_break = 1;  /* Esc and ^C break, unless they are typing */
+static int screen_taken;        /* EDIT or RUN painted over everything */
+static int quit_requested;      /* BYE */
 
 static void error(const char *msg, const char *name, int len);
+static int include_from_code(const char *name, int len);
 
 /* Called where a running program goes round: loops, and the helpers that
  * compiled code calls.  Every so often it looks for the break key. */
@@ -72,7 +81,7 @@ static void tick(void)
 {
     if (++ticks & 0x7FFF)
         return;
-    if (input_break_check()) {
+    if (input_break_check(keyboard_break)) {
         interrupted = 1;
         error("interrupted", 0, 0);
     }
@@ -107,7 +116,9 @@ static void error(const char *msg, const char *name, int len)
     }
     def_header = 0;
     state = 0;
-    dsp = rsp = csp = 0;
+    dsp = dfloor;
+    rsp = rfloor;
+    csp = 0;
     nleaves = 0;
     aborted = 1;
 }
@@ -123,7 +134,7 @@ static void push(cell v)
 
 static cell pop(void)
 {
-    if (dsp <= 0) {
+    if (dsp <= dfloor) {
         error("stack underflow", 0, 0);
         return 0;
     }
@@ -141,7 +152,7 @@ static void rpush(cell v)
 
 static cell rpop(void)
 {
-    if (rsp <= 0) {
+    if (rsp <= rfloor) {
         error("return stack underflow", 0, 0);
         return 0;
     }
@@ -604,14 +615,16 @@ static void prim(int code, cell xt, cell **ipp)
         if (max < 0 || !addr_ok(addr, (u32)max, 0))
             break;
         for (;;) {
-            gfx_box(16 + (con_col() + 2) * 8 - 16, con_row() * 16 + 1, 8, 14,
+            gfx_box(con_origin_x() + con_col() * 8,
+                    con_origin_y() + con_row() * 16 + 1, 8, 14,
                     RGB(255, 190, 90));
             while (!(c = input_getchar())) {
                 vi_wait_vblank();
                 input_poll();
                 kernel_status_bar();
             }
-            gfx_box(16 + (con_col() + 2) * 8 - 16, con_row() * 16 + 1, 8, 14,
+            gfx_box(con_origin_x() + con_col() * 8,
+                    con_origin_y() + con_row() * 16 + 1, 8, 14,
                     RGB(10, 14, 30));
             if (c == '\n' || c == KEY_ESC)
                 break;
@@ -660,12 +673,12 @@ static void prim(int code, cell xt, cell **ipp)
     case P_NIP:     b = pop(); (void)pop(); push(b); break;
     case P_TUCK:    b = pop(); a = pop(); push(b); push(a); push(b); break;
     case P_PICK:    a = pop();
-                    if (a < 0 || a >= dsp) error("PICK out of range", 0, 0);
+                    if (a < 0 || a >= dsp - dfloor) error("PICK out of range", 0, 0);
                     else push(dstack[dsp - 1 - a]); break;
     case P_ROLL: {
         int i;
         a = pop();
-        if (a < 0 || a >= dsp) {
+        if (a < 0 || a >= dsp - dfloor) {
             error("ROLL out of range", 0, 0);
             break;
         }
@@ -675,7 +688,7 @@ static void prim(int code, cell xt, cell **ipp)
         dstack[dsp - 1] = b;
         break;
     }
-    case P_DEPTH:   push(dsp); break;
+    case P_DEPTH:   push(dsp - dfloor); break;
     case P_TOR:     rpush(pop()); break;
     case P_RFROM:   push(rpop()); break;
     case P_RFETCH:  push(rstack[rsp - 1]); break;
@@ -734,8 +747,8 @@ static void prim(int code, cell xt, cell **ipp)
     case P_HDOT:    con_printf("%x ", (u32)pop()); break;
     case P_DOTS: {
         int i;
-        con_printf("<%d> ", dsp);
-        for (i = 0; i < dsp; i++)
+        con_printf("<%d> ", dsp - dfloor);
+        for (i = dfloor; i < dsp; i++)
             print_number(dstack[i], base);
         break;
     }
@@ -858,8 +871,13 @@ static void prim(int code, cell xt, cell **ipp)
     case P_BUTTONS: push(input_buttons(0)); break;
     case P_PRESSED: push(input_pressed(0)); break;
     case P_TICKS:   push((cell)vi_frames()); break;
-    case P_CURSOR:  gfx_cursor_show(input_mouse()->x, input_mouse()->y,
-                                    RGB(255, 255, 255), RGB(0, 0, 0)); break;
+    case P_CURSOR:                      /* only with a mouse to point */
+        if (input_mouse()->present)
+            gfx_cursor_show(input_mouse()->x, input_mouse()->y,
+                            RGB(255, 255, 255), RGB(0, 0, 0));
+        else
+            gfx_cursor_hide();
+        break;
     case P_HIDECUR: gfx_cursor_hide(); break;
     case P_NOCLIP:  gfx_noclip(); break;
     case P_CLIP: {
@@ -1038,6 +1056,77 @@ static void prim(int code, cell xt, cell **ipp)
             push(find((const char *)(u32)a, (int)u, 0));
         else if (!aborted)
             push(0);
+        break;
+    }
+    case P_CONSTEP: {                   /* ( repaints focused -- taken ) */
+        cell focused = pop(), repaint = pop();
+
+        if (!aborted)
+            push(repl_window_step(canvas[0], canvas[1], canvas[2], canvas[3],
+                                  (int)repaint, (int)focused));
+        break;
+    }
+    case P_EDITOPEN: {                  /* ( c-addr u -- ior ) */
+        cell u = pop(), a = pop();
+
+        if (!aborted && name_ok(a, u))
+            push(edit_window_open((const char *)(u32)a, (int)u));
+        break;
+    }
+    case P_EDITOR: {                    /* ( repaints focused -- status ) */
+        cell focused = pop(), repaint = pop();
+
+        if (!aborted) {
+            int st = edit_window_step(canvas[0], canvas[1], canvas[2],
+                                      canvas[3], (int)repaint, (int)focused);
+
+            if (focused)
+                keys_claimed();
+            push(st);
+        }
+        break;
+    }
+    case P_EDITED: {                    /* ( -- c-addr u ) the open file */
+        int n;
+        const char *name = edit_window_name(&n);
+
+        push((cell)(u32)name);
+        push(n);
+        break;
+    }
+    case P_BYE:      quit_requested = 1; break;
+    case P_LATESTAT: push(latest); break;
+    case P_LATESTST:                    /* ( h -- ) hide what came after h */
+        a = pop();
+        if (aborted)
+            break;
+        {   /* only a header already in the chain: nothing can be made up */
+            cell h = latest;
+
+            while (h && h != a)
+                h = *(cell *)(u32)h;
+            if (h != a || a < primitives_end)
+                error("LATEST! wants a word already defined", 0, 0);
+            else
+                latest = a;
+        }
+        break;
+    case P_INCLUDED: {                  /* ( c-addr u -- flag ) from code */
+        cell u = pop(), a = pop();
+
+        if (!aborted && name_ok(a, u))
+            push(include_from_code((const char *)(u32)a, (int)u) ? -1 : 0);
+        break;
+    }
+    case P_FILES: {                     /* the Files window, then back */
+        int cx, cy, cw, ch;
+
+        gfx_clip_get(&cx, &cy, &cw, &ch);
+        gfx_noclip();
+        files_app();
+        gfx_clip(cx, cy, cw, ch);
+        screen_taken = 1;
+        repl_repaint();
         break;
     }
     case P_QUIET:    audio_quiet(); break;
@@ -1672,6 +1761,33 @@ int forth_include(const char *name, int len)
     return 1;
 }
 
+static void run_full_screen(int code, const char *name, int len);
+
+/* INCLUDED: a file brought in by running code -- the desk opening an app
+ * while it runs.  Like a line at a prompt in a window, it gets stacks of
+ * its own above the caller's, so an error in the file unwinds only the
+ * file; what the file leaves on the data stack is dropped. */
+static int include_from_code(const char *name, int len)
+{
+    int d0 = dsp, r0 = rsp, fd = dfloor, fr = rfloor, ok;
+    char copy[FS_NAME_MAX + 1];
+    int i;
+
+    for (i = 0; i < len && i < FS_NAME_MAX; i++)
+        copy[i] = name[i];              /* the name may be in a line buffer */
+    copy[i] = 0;
+    dfloor = dsp;
+    rfloor = rsp;
+    ok = forth_include(copy, i);
+    dsp = d0;
+    rsp = r0;
+    dfloor = fd;
+    rfloor = fr;
+    aborted = 0;
+    interrupted = 0;
+    return ok;
+}
+
 static void do_file_command(int code)
 {
     char name[FS_NAME_MAX + 1];
@@ -1695,15 +1811,39 @@ static void do_file_command(int code)
         forth_include(name, len);
         return;
     }
+    /* EDIT and RUN take the whole screen, even from a prompt in a window,
+     * whose clip and canvas are put back when they are done. */
+    {
+        int cx, cy, cw, ch;
+        cell saved[4];
+
+        gfx_clip_get(&cx, &cy, &cw, &ch);
+        for (i = 0; i < 4; i++)
+            saved[i] = canvas[i];
+        gfx_noclip();
+        run_full_screen(code, name, len);
+        gfx_clip(cx, cy, cw, ch);
+        for (i = 0; i < 4; i++)
+            canvas[i] = saved[i];
+    }
+}
+
+static void run_full_screen(int code, const char *name, int len)
+{
+    int i;
+
     if (code == P_RUN) {
         /* An app gets its window; the prompt comes back when it closes. */
-        if (desktop_open_file(name))
+        if (desktop_open_file(name)) {
+            screen_taken = 1;
             repl_repaint();
+        }
         else
             forth_include(name, len);
         return;
     }
     i = edit_file(name, len);
+    screen_taken = 1;
     repl_repaint();
     if (i == EDIT_RUN)
         forth_include(name, len);
@@ -1830,7 +1970,71 @@ void forth_eval_lines(const char *src)
 
 int forth_depth(void)
 {
-    return dsp;
+    return dsp - dfloor;
+}
+
+/* A line typed at a prompt in a window, evaluated from inside the running
+ * program that draws the window.  The line gets stacks of its own on top
+ * of the program's, an error or the break key unwinds only those, and what
+ * the line leaves on the data stack is kept for the next one -- as at any
+ * prompt -- rather than left under the program's feet. */
+#define KEPT_MAX 64
+static cell kept[KEPT_MAX];
+static int nkept;
+
+void forth_keyboard_break(int on)
+{
+    keyboard_break = on;
+}
+
+/* Has something had the whole screen since the last time anyone asked? */
+int forth_screen_taken(void)
+{
+    int t = screen_taken;
+
+    screen_taken = 0;
+    return t;
+}
+
+int forth_quit_requested(void)
+{
+    int q = quit_requested;
+
+    quit_requested = 0;
+    return q;
+}
+
+int forth_eval_nested(const char *line)
+{
+    int d0 = dsp, r0 = rsp, fd = dfloor, fr = rfloor, i, ok;
+    int kb = keyboard_break;
+
+    if (dsp + nkept + 16 >= DSTACK_MAX || rsp + 16 >= RSTACK_MAX) {
+        con_puts("? no room on the stacks to run that here\n");
+        return 0;
+    }
+    dfloor = dsp;
+    rfloor = rsp;
+    for (i = 0; i < nkept; i++)
+        dstack[dsp++] = kept[i];
+    keyboard_break = 1;                 /* now Esc and ^C stop the line */
+    forth_eval(line);
+    keyboard_break = kb;
+    ok = !aborted;
+    nkept = dsp - dfloor;
+    if (nkept > KEPT_MAX)
+        nkept = KEPT_MAX;
+    if (nkept < 0)
+        nkept = 0;
+    for (i = 0; i < nkept; i++)
+        kept[i] = dstack[dfloor + i];
+    dsp = d0;
+    rsp = r0;
+    dfloor = fd;
+    rfloor = fr;
+    aborted = 0;                        /* the program itself is fine */
+    interrupted = 0;
+    return ok;
 }
 
 /* ------------------------------------------------------------- startup */
@@ -1927,7 +2131,12 @@ static const struct primdef prims[] = {
     { "[CHAR]", P_BRCHAR, IMMEDIATE }, { "CASE", P_CASE, IMMEDIATE },
     { "OF", P_OF, IMMEDIATE }, { "ENDOF", P_ENDOF, IMMEDIATE },
     { "ENDCASE", P_ENDCASE, IMMEDIATE }, { "ACCEPT", P_ACCEPT, 0 },
-    { "FIND-NAME", P_FINDNAME, 0 }, { "BEEP", P_BEEP, 0 }, { "QUIET", P_QUIET, 0 },
+    { "FIND-NAME", P_FINDNAME, 0 }, { "CONSOLE", P_CONSTEP, 0 },
+    { "BYE", P_BYE, 0 }, { "INCLUDED", P_INCLUDED, 0 },
+    { "LATEST@", P_LATESTAT, 0 }, { "LATEST!", P_LATESTST, 0 },
+    { "EDIT-OPEN", P_EDITOPEN, 0 }, { "EDITOR", P_EDITOR, 0 },
+    { "EDITED", P_EDITED, 0 },
+    { "FILES", P_FILES, 0 }, { "BEEP", P_BEEP, 0 }, { "QUIET", P_QUIET, 0 },
     { "SOUNDING?", P_SOUNDING, 0 }, { "VOLUME", P_VOLUME, 0 },
 };
 
@@ -1938,6 +2147,7 @@ void forth_init(void)
     dp = dict;
     latest = 0;
     dsp = rsp = csp = 0;
+    dfloor = rfloor = 0;
     def_header = 0;
     state = 0;
     base = 10;
@@ -2117,17 +2327,42 @@ void forth_set_here(u32 where)
     dp = (u8 *)where;
 }
 
+/* Where the dictionary ended when a mark was taken, so that a release puts
+ * it back exactly -- rather than working it out from the last word's code,
+ * which means knowing every word that carries an operand. */
+#define MARKS 8
+static struct { cell latest; u8 *dp; } marks[MARKS];
+static int nmarks;
+
 u32 forth_mark(void)
 {
+    if (nmarks == MARKS) {              /* the oldest makes way */
+        int i;
+
+        for (i = 1; i < MARKS; i++)
+            marks[i - 1] = marks[i];
+        nmarks--;
+    }
+    marks[nmarks].latest = latest;
+    marks[nmarks].dp = dp;
+    nmarks++;
     return (u32)latest;
 }
 
 void forth_release(u32 mark)
 {
     cell h = latest;
+    int i;
 
     if (!mark)
         return;
+    for (i = nmarks - 1; i >= 0; i--)
+        if (marks[i].latest == (cell)mark) {
+            latest = (cell)mark;
+            dp = marks[i].dp;
+            nmarks = i;
+            return;
+        }
     while (h && h != (cell)mark)
         h = *(cell *)(u32)h;
     if (h != (cell)mark)

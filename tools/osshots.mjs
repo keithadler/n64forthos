@@ -60,4 +60,20 @@ t.frames(90);
 for (let i = 0; i < 7; i++) t.press(PAD.DOWN);
 t.press(PAD.A); t.frames(420);
 t.png(OUT + 'tasks.png');
-console.log('docs/img: editor.png shell.png desktop.png files.png sketch.png tasks.png');
+// The desk: a prompt, with apps opened from it.
+const d = new Machine();
+d.emu.mouseConnected = false;
+d.frames(90);
+for (let i = 0; i < 8; i++) d.press(PAD.DOWN);
+d.press(PAD.A); d.frames(60);
+d.type('PAGE OPEN LIFE.FTH\n'); d.frames(30);
+d.type('OPEN MANDEL.FTH\n'); d.frames(30);
+d.type('OPEN NAVIER.FTH\n'); d.frames(30);
+d.type(': SQUARES 6 1 DO I DUP * . LOOP ; SQUARES\n'); d.frames(200);
+d.png(OUT + 'desk.png');
+// Writing a program in a window, and running it at the prompt.
+d.type('EDIT CUBE.FTH\n'); d.frames(20);
+d.type('\x16\\ cube.fth -- written on the desk\n: CUBE ( n -- n^3 ) DUP DUP * * ;\n: CUBES 6 1 DO I CUBE . LOOP CR ;\nCUBES\n\x16');
+d.type(KEY.ctrl('r')); d.frames(40);
+d.png(OUT + 'desk-edit.png');
+console.log('docs/img: editor.png shell.png desktop.png files.png sketch.png tasks.png desk.png desk-edit.png');

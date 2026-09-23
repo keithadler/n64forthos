@@ -116,7 +116,7 @@ void input_init(void);
 u8 *input_block(void);
 void input_exchange(void);
 int input_accessory(int n);
-int input_break_check(void);
+int input_break_check(int keyboard_breaks);
 void input_poll(void);
 const pad_t *input_pad(int n);
 const mouse_t *input_mouse(void);
@@ -169,6 +169,9 @@ void gfx_cursor_hide(void);
 #define CON_MAX_COLS 76
 void con_init(u16 bg);
 void con_set_cols(int n);
+void con_place(int x, int y, int cols, int top, int bottom);
+int con_origin_x(void);
+int con_origin_y(void);
 int con_cols(void);
 void con_color(u16 fg);
 u16 con_get_color(void);
@@ -216,6 +219,7 @@ u8 pak_data_crc(const u8 *data);
 #define FS_EIO          (-8)
 #define FS_EUNFORMATTED (-9)
 #define FS_ECORRUPT     (-10)
+#define FS_EBUSY        (-11)           /* another file open, not saved */
 
 int fs_mount(void);
 int fs_state(void);
@@ -272,14 +276,27 @@ void forth_release(u32 mark);
 u32 forth_word_count(void);
 
 int forth_include(const char *name, int len);
+int forth_eval_nested(const char *line);
+void forth_keyboard_break(int on);
+int forth_screen_taken(void);
+int forth_quit_requested(void);
 
 /* edit.c -- the text editor */
 #define EDIT_QUIT 0
 #define EDIT_RUN  1
 int edit_file(const char *name, int len);
+#define EDIT_STEP_CLOSED 1              /* what edit_window_step says */
+#define EDIT_STEP_SWITCH 2
+#define EDIT_STEP_RUN    4
+int edit_window_open(const char *name, int len);
+int edit_window_step(int x, int y, int w, int h, int repaint, int focused);
+const char *edit_window_name(int *n);
 
 /* repl.c */
 void repl_repaint(void);
+int repl_window_step(int x, int y, int w, int h, int repaint, int focused);
+int console_has_keys(void);
+void keys_claimed(void);
 
 /* desktop.c */
 void desktop_run(void);
